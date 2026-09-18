@@ -1,10 +1,6 @@
-// A minimal MCP client over the streamable HTTP transport (2025-03-26 spec):
-// JSON-RPC 2.0 requests POSTed to one endpoint, with a response that is
-// either a single JSON body or a `text/event-stream` carrying one or more
-// JSON-RPC messages as SSE `data:` frames. No session id, no resumption, no
-// server-initiated requests -- this client only ever sends and awaits one
-// reply per call, which is all `initialize` / `tools/list` / `tools/call`
-// need.
+// MCP streamable-HTTP transport client (2025-03-26 spec): no session id or
+// resumption because this client only ever sends one request and awaits
+// its one reply, which is all initialize/tools-list/tools-call need.
 
 import { type } from "arktype";
 

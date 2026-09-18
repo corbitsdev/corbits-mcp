@@ -104,6 +104,84 @@ describe("mcpTools discovers a live server and floors every tool at ask", () => 
   });
 });
 
+describe("env.credentials wiring: mcpTools resolves a server's fetch through the standard capability", () => {
+  test("a bound credential's fetch is used for tools/call", async () => {
+    handle = startTestMcpServer({ requireAuth: "Bearer secret" });
+    const grants: GrantRule[] = [
+      {
+        id: "g1",
+        resource: "credential:cred-1",
+        action: "use",
+        effect: "allow",
+        origin: "system",
+        conditions: { tool: "@corbits/mcp/servers" },
+        roleId: null,
+        principalId: null,
+        expiresAt: null,
+      },
+    ];
+    const providers = createCredentialProviderRegistry([
+      {
+        key: "bearer",
+        shape: () => ({
+          kind: "http" as const,
+          fetch: (input: string | URL | Request, init?: RequestInit) =>
+            fetch(input, {
+              ...init,
+              headers: { ...init?.headers, authorization: "Bearer secret" },
+            }),
+          dispose: () => undefined,
+        }),
+      },
+    ]);
+    const bindings = new Map([
+      [
+        "mcp-server",
+        {
+          credentialId: "cred-1",
+          providerKey: "bearer",
+          origin: new URL(handle.url).origin,
+          readCurrentMaterial: () => ({ secret: "secret" }),
+        },
+      ],
+    ]);
+    const credentials = createCredentialCapability({
+      consumer: "@corbits/mcp/servers",
+      bindings,
+      providers,
+      grants,
+    });
+
+    const factory = await mcpTools(
+      {
+        servers: [
+          { name: "srv", url: handle.url, credentialHandle: "mcp-server" },
+        ],
+      },
+      { credentials },
+    );
+    // Minimal same-shaped BaseEnv stub; see the identical note above.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    const bundle = factory({
+      sources: [],
+      defaultSource: "x",
+      storage: {},
+      workdir: "/tmp",
+      audit: {},
+      authorize: () => Promise.resolve({ effect: "allow", matchingGrants: [] }),
+      directors: {},
+      credentials,
+    } as unknown as Parameters<typeof factory>[0]);
+
+    const result = await bundle.run(
+      { id: "1", name: "srv.echo", arguments: { text: "hi" } },
+      new AbortController().signal,
+    );
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toBe("hi");
+  });
+});
+
 describe("credential isolation (CL-8392): the declared handle binds only to @corbits/mcp", () => {
   test("a different consumer cannot resolve the mcp-server credential", async () => {
     const grants: GrantRule[] = [

@@ -25,7 +25,11 @@ defineAgent({
 
 Each remote tool becomes an agent tool named `<server>.<tool>` (e.g.
 `linear.list_issues`), with the remote `inputSchema` passed through
-verbatim and its call proxied to `tools/call`.
+verbatim and its call proxied to `tools/call`. `mcpTools` is called
+directly in agent-authoring code, the same way `tools/linear`'s
+`linearTools` is -- not through the sidecar's dynamic package loader,
+which requires a package's entry to already be a built factory and so
+can't accommodate this discovery step.
 
 ## Grants
 

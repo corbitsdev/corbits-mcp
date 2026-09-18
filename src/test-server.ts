@@ -1,7 +1,5 @@
-// A minimal streamable-HTTP MCP server for tests: two tools, `echo` (safe)
-// and `delete_thing` (`destructiveHint: true`), backed by `Bun.serve` so
-// the test suite needs no network. JSON responses only (the SSE branch is
-// covered by client.test.ts directly against a hand-built stream).
+// In-test streamable-HTTP MCP server (`echo`, and `delete_thing` flagged
+// `destructiveHint`) so the suite needs no network.
 
 import { type } from "arktype";
 

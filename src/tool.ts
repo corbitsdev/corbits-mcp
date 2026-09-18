@@ -1,15 +1,6 @@
-// The `mcpTools` bundle factory: one `@intx/agent` tool per remote tool on
-// each configured MCP server, named `<server>.<tool>` so Interchange's
-// native `tool:<name>` grant surface (checked in `@intx/inference`'s
-// authz-extension) is individually grantable per remote tool, and
-// `tool:<server>.*` covers a whole server. This library adds no gate of
-// its own -- it only shapes the declaration every generated tool carries
-// so the native gate has the right floor.
-//
-// Discovery (`initialize` + `tools/list`) happens once, up front, when
-// `mcpTools()` is called -- an `AnnotatedToolFactory`'s `definitions` must
-// be readable without instantiating it, so the remote catalog has to be
-// known before `defineTool` is ever invoked.
+// One `@intx/agent` tool per remote MCP tool, named `<server>.<tool>` so
+// each is grantable individually. Discovery runs up front because
+// `createAgent` calls a tool factory synchronously.
 
 import {
   defineTool,
@@ -41,13 +32,8 @@ export interface McpServerConfig {
 }
 
 export interface McpToolsEnv extends BaseEnv {
-  /**
-   * Consumer-scoped credential capability, supplied by the host the same
-   * way any other env-DI dependency is. Required only when a configured
-   * server declares a `credentialHandle`; resolution is fail-closed per
-   * `@intx/harness`'s `createCredentialCapability`.
-   */
-  mcpCredentials?: CredentialCapability;
+  /** The consumer-scoped `credentials` capability; see `tools/linear`'s `LinearEnv`. */
+  readonly credentials?: CredentialCapability;
 }
 
 export interface McpToolsOptions {
@@ -99,7 +85,7 @@ async function resolveFetch(
   if (server.credentialHandle === undefined) return undefined;
   if (credentials === undefined) {
     throw new Error(
-      `MCP server "${server.name}" declares credentialHandle "${server.credentialHandle}" but no mcpCredentials capability was supplied`,
+      `MCP server "${server.name}" declares credentialHandle "${server.credentialHandle}" but no credentials capability was supplied`,
     );
   }
   const mediated = await credentials.resolve(server.credentialHandle);
@@ -114,19 +100,21 @@ interface DiscoveredTool {
 
 /**
  * Discover every server's tool catalog and build the `@corbits/mcp` tool
- * factory. Performs one `initialize` + `tools/list` round trip per server;
- * a discovery-time credential (for servers that need auth to list tools)
- * comes from `env.mcpCredentials` supplied via `discoveryEnv`.
+ * factory. Called directly from agent-authoring code (same pattern as
+ * `tools/linear`'s `linearTools`), not via the sidecar's dynamic
+ * package loader -- that loader requires a package's `interchange.tools`
+ * export to already be an `AnnotatedToolFactory`, which discovery's
+ * network round trip rules out.
  */
 export async function mcpTools(
   options: McpToolsOptions,
-  discoveryEnv: { mcpCredentials?: CredentialCapability } = {},
+  discoveryEnv: { credentials?: CredentialCapability } = {},
 ): Promise<AnnotatedToolFactory<McpToolsEnv>> {
   const allowWithoutAsk = options.allowWithoutAsk ?? [];
   const discovered: DiscoveredTool[] = [];
 
   for (const server of options.servers) {
-    const clientFetch = await resolveFetch(server, discoveryEnv.mcpCredentials);
+    const clientFetch = await resolveFetch(server, discoveryEnv.credentials);
     const clientOpts = clientFetch !== undefined ? { fetch: clientFetch } : {};
     await mcpInitialize(server.url, clientOpts);
     const tools = await mcpListTools(server.url, clientOpts);
@@ -150,6 +138,8 @@ export async function mcpTools(
 
   return defineTool<McpToolsEnv>({
     id: "@corbits/mcp/servers",
+    // Optional like `tools/github`'s: only servers that declare a
+    // `credentialHandle` need `env.credentials` at all.
     requires: [],
     definitions,
     factory: (env) => {
@@ -163,10 +153,7 @@ export async function mcpTools(
       );
       const fetchByServer = new Map<string, Promise<FetchLike | undefined>>();
       for (const server of options.servers) {
-        fetchByServer.set(
-          server.name,
-          resolveFetch(server, env.mcpCredentials),
-        );
+        fetchByServer.set(server.name, resolveFetch(server, env.credentials));
       }
 
       return {

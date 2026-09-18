@@ -19,7 +19,6 @@
     ".": "./src/index.ts"
   },
   "interchange": {
-    "tools": "./src/index.ts",
     "credentials": [
       {
         "handle": "mcp-server",
