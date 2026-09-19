@@ -1,58 +1,80 @@
 # @corbits/mcp
 
-An MCP client tool package for Interchange: streamable HTTP transport
-(2025-03-26 spec), one `@intx/agent` tool per remote tool, and no gate of
-its own -- Interchange's native per-tool grant checks the whole surface.
+An MCP client for Interchange: streamable HTTP transport (2025-03-26 spec),
+one `@intx/agent` tool per remote tool, and no gate of its own -- native
+per-tool grants check the whole surface.
 
-## Usage
+## Shape
+
+Discovery and calling are split, because a deployed agent's tool factories
+are evaluated synchronously when the agent is constructed and the agent must
+never hold a server's bearer.
+
+1. **The deployer discovers the catalog once**, server-side, through the hub
+   route this package mounts. The browser never holds an MCP token, so this
+   is the only way an OAuth-protected server's `tools/list` can be read.
+2. **The catalog is stored** with the rest of the agent's deploy config.
+3. **`mcpServers` turns it into tools.** It is synchronous and does no
+   network work at construction: the names and the `ask` marks come from the
+   stored catalog.
+4. **At run time the agent only ever sees a mediated handle.** Each server's
+   credential resolves to an `http` handle -- a fetch pinned to that server's
+   origin that injects the bearer per request -- so the token never reaches
+   agent code, and a relative path is all the bundle ever asks for.
+
+### Hub
 
 ```ts
-import { mcpTools } from "@corbits/mcp";
-import { defineAgent } from "@intx/agent";
+import { mountMcpDiscovery } from "@corbits/mcp/hub";
 
-const linear = await mcpTools({
-  servers: [{ name: "linear", url: "https://mcp.linear.app/mcp" }],
-});
+const api = new Hono<TenantEnv>();
+mountMcpDiscovery(api, { db, cipher, requireGrant });
+app.route("/api/tenants/:tenantId", api);
+```
 
-defineAgent({
-  id: "my-agent",
-  systemPrompt: "...",
-  tools: [linear],
-  capabilities: [],
-  inference: { sources: [] },
+`POST /api/tenants/:tenantId/mcp/discover` with `{ url, credentialId? }`
+answers `{ data: { serverInfo, tools } }`. `url` must be https (http only on
+loopback); `credentialId` names a tenant credential whose secret is sent as a
+bearer, and the keyless sentinel sends no `authorization` header at all. The
+outbound fetch is origin-pinned and refuses a 3xx, so the secret never leaves
+the server's own origin.
+
+### Sidecar bundle
+
+```ts
+import { mcpServers } from "@corbits/mcp/sidecar-bundle";
+
+export const tools = mcpServers({
+  servers: [
+    {
+      handle: "linear",
+      url: "https://mcp.linear.app/mcp",
+      tools: storedCatalog,
+      allowWithoutAsk: ["linear.list_issues"],
+    },
+  ],
 });
 ```
 
-Each remote tool becomes an agent tool named `<server>.<tool>` (e.g.
-`linear.list_issues`), with the remote `inputSchema` passed through
-verbatim and its call proxied to `tools/call`. `mcpTools` is called
-directly in agent-authoring code, the same way `tools/linear`'s
-`linearTools` is -- not through the sidecar's dynamic package loader,
-which requires a package's entry to already be a built factory and so
-can't accommodate this discovery step.
+Each catalog entry becomes a tool named `<handle>.<tool>`, with the remote
+`inputSchema` passed through verbatim and its call proxied to `tools/call`. A
+result's text content comes back as text and anything else as JSON; `isError`
+passes through. A handle that will not resolve, or a server that fails
+`initialize`, fails only that server's calls.
+
+`mcpTools` (the root export) is the author-time equivalent, for code that can
+await discovery itself.
 
 ## Grants
 
-Interchange checks every tool call as resource `tool:<name>`, most
-specific match wins, `deny` beats `ask` beats `allow`
-(`vendor/intx/inference/src/authz-extension.ts`). Because each remote
-tool is its own agent tool, `tool:<server>.<tool>` is grantable
-individually and `tool:<server>.*` covers a whole server.
+Every call is checked as resource `tool:<name>`, most specific match wins,
+`deny` beats `ask` beats `allow`. Because each remote tool is its own agent
+tool, `tool:<handle>.<tool>` is grantable individually and `tool:<handle>.*`
+covers a whole server.
 
-Two knobs, both in `mcpTools(options)`:
-
-- **Grant effect** -- an operator's `allow`/`deny`/`ask` grant on
-  `tool:<server>.<tool>` or `tool:<server>.*`, set the normal Interchange
-  way (roles, invoker delegation, etc). This library never writes grants.
-- **`allowWithoutAsk`** -- every generated tool is `ask`-marked by
-  default; listing `"<server>.<tool>"` here is the _only_ way to lower
-  that mark, and it is ignored for any remote tool the server flags
-  `destructiveHint: true`.
-
-A server that needs auth declares `credentialHandle: "mcp-server"`
-(the handle this package declares in `interchange.credentials`), so the
-resulting `credential:<id>` / `use` grant binds the token to
-`@corbits/mcp` only -- no other tool package can resolve it.
+Every generated tool starts `ask`-marked. Listing `"<handle>.<tool>"` in
+`allowWithoutAsk` is the only way to lower that mark, and it is ignored for
+any remote tool the server flags `destructiveHint: true`.
 
 ## License
 
