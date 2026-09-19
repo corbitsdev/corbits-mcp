@@ -6,7 +6,8 @@ import {
 } from "@intx/harness";
 import type { GrantRule } from "@intx/authz";
 
-import { mcpTools, isAskExempt, qualifiedName } from "./tool";
+import { mcpTools } from "./tool";
+import { isAskExempt, qualifiedName } from "./naming";
 import { startTestMcpServer, type TestServerHandle } from "./test-server";
 import type { McpTool } from "./client";
 
