@@ -4,7 +4,7 @@
 
 import { type } from "arktype";
 
-const McpToolSchema = type({
+export const McpToolSchema = type({
   name: "string",
   "description?": "string",
   inputSchema: "Record<string, unknown>",
@@ -145,12 +145,19 @@ async function readSseJsonRpc(
   );
 }
 
-/** `initialize` handshake. Result is not otherwise inspected by this client. */
+const InitializeResult = type({
+  "protocolVersion?": "string",
+  "serverInfo?": { name: "string", "version?": "string" },
+});
+export type McpServerInfo = typeof InitializeResult.infer;
+
+/** `initialize` handshake. The server's own identification is returned for a
+ * caller that shows it; nothing here depends on it. */
 export async function mcpInitialize(
   url: string,
   opts: McpClientOptions = {},
-): Promise<void> {
-  await sendRequest(
+): Promise<McpServerInfo> {
+  const result = await sendRequest(
     url,
     "initialize",
     {
@@ -160,6 +167,8 @@ export async function mcpInitialize(
     },
     opts,
   );
+  const parsed = InitializeResult(result);
+  return parsed instanceof type.errors ? {} : parsed;
 }
 
 const ToolsListResult = type({ tools: McpToolSchema.array() });

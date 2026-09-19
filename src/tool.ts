@@ -18,6 +18,7 @@ import {
   type FetchLike,
   type McpTool,
 } from "./client";
+import { isAskExempt, qualifiedName, toolDescription } from "./naming";
 
 export interface McpServerConfig {
   /** Namespace prefix for this server's tools: `<name>.<remote-tool-name>`. */
@@ -46,36 +47,6 @@ export interface McpToolsOptions {
    * that flag wins no matter what the operator lists here.
    */
   allowWithoutAsk?: string[];
-}
-
-export function qualifiedName(server: string, tool: string): string {
-  return `${server}.${tool}`;
-}
-
-function toolDescription(tool: McpTool, server: string): string {
-  const hints = Object.entries(tool.annotations ?? {})
-    .filter(([, v]) => v === true)
-    .map(([k]) => k);
-  const base =
-    tool.description ?? `Remote tool "${tool.name}" on MCP server "${server}".`;
-  return hints.length > 0
-    ? `${base} (server annotations: ${hints.join(", ")})`
-    : base;
-}
-
-/**
- * Whether `qualified` may drop below the `ask` floor: it must be on the
- * operator's `allowWithoutAsk` list AND the remote tool must not be
- * `destructiveHint: true`. Exported so the approval-derivation rule is
- * independently testable from the network-dependent factory build.
- */
-export function isAskExempt(
-  qualified: string,
-  tool: McpTool,
-  allowWithoutAsk: readonly string[],
-): boolean {
-  if (tool.annotations?.destructiveHint === true) return false;
-  return allowWithoutAsk.includes(qualified);
 }
 
 async function resolveFetch(
