@@ -3,9 +3,9 @@ export {
   type McpServerConfig,
   type McpToolsEnv,
   type McpToolsOptions,
-} from "./tool";
+} from "./tool.js";
 
-export { qualifiedName, isAskExempt, toolDescription } from "./naming";
+export { qualifiedName, isAskExempt, toolDescription } from "./naming.js";
 
 export {
   mcpInitialize,
@@ -17,4 +17,4 @@ export {
   type McpToolResult,
   type McpClientOptions,
   type FetchLike,
-} from "./client";
+} from "./client.js";

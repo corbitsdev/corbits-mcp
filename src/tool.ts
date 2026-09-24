@@ -17,8 +17,8 @@ import {
   mcpListTools,
   type FetchLike,
   type McpTool,
-} from "./client";
-import { isAskExempt, qualifiedName, toolDescription } from "./naming";
+} from "./client.js";
+import { isAskExempt, qualifiedName, toolDescription } from "./naming.js";
 
 export interface McpServerConfig {
   /** Namespace prefix for this server's tools: `<name>.<remote-tool-name>`. */

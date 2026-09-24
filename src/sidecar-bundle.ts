@@ -23,9 +23,9 @@ import {
   mcpInitialize,
   McpToolSchema,
   type McpTool,
-} from "./client";
-import { isAskExempt, qualifiedName, toolDescription } from "./naming";
-import { parseMcpEndpoint } from "./url";
+} from "./client.js";
+import { isAskExempt, qualifiedName, toolDescription } from "./naming.js";
+import { parseMcpEndpoint } from "./url.js";
 
 /** The consumer key a host matches a credential binding against. */
 export const SIDECAR_BUNDLE_ID = "@corbits/mcp/sidecar-bundle";

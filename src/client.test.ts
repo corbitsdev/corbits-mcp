@@ -1,8 +1,13 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { type } from "arktype";
 
-import { mcpCallTool, mcpInitialize, mcpListTools, McpError } from "./client";
-import { startTestMcpServer, type TestServerHandle } from "./test-server";
+import {
+  mcpCallTool,
+  mcpInitialize,
+  mcpListTools,
+  McpError,
+} from "./client.js";
+import { startTestMcpServer, type TestServerHandle } from "./test-server.js";
 
 const RequestIdOnly = type({ id: "number" });
 
