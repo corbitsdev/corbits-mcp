@@ -50,7 +50,7 @@
   },
   "peerDependencies": {
     "@corbits/credential-mcp": "^0.1.0",
-    "@intx/agent": ">=0.4.0"
+    "@intx/agent": "^0.4.0"
   },
   "dependencies": {
     "@corbits/oauth-core": "^0.1.0",
