@@ -4,23 +4,32 @@ An MCP client for Interchange: streamable HTTP transport (2025-03-26 spec),
 one `@intx/agent` tool per remote tool, and no gate of its own -- native
 per-tool grants check the whole surface.
 
-## Shape
+## Install
 
-Discovery and calling are split, because a deployed agent's tool factories
-are evaluated synchronously when the agent is constructed and the agent must
-never hold a server's bearer.
+```bash
+npm add @corbits/mcp
+```
 
-1. **The deployer discovers the catalog once**, server-side, through the hub
-   route this package mounts. The browser never holds an MCP token, so this
-   is the only way an OAuth-protected server's `tools/list` can be read.
-2. **The catalog is stored** with the rest of the agent's deploy config.
-3. **`mcpServers` turns it into tools.** It is synchronous and does no
-   network work at construction: the names and the `ask` marks come from the
-   stored catalog.
-4. **At run time the agent only ever sees a mediated handle.** Each server's
-   credential resolves to an `http` handle -- a fetch pinned to that server's
-   origin that injects the bearer per request -- so the token never reaches
-   agent code, and a relative path is all the bundle ever asks for.
+## Quickstart
+
+```ts
+import { mcpInitialize, mcpListTools } from "@corbits/mcp";
+
+const url = "https://mcp.deepwiki.com/mcp";
+await mcpInitialize(url);
+for (const tool of await mcpListTools(url)) {
+  console.log(`${tool.name}: ${tool.description ?? ""}`);
+}
+```
+
+Pass `{ fetch }` to either call to send a bearer or pin the origin.
+
+## Using with Interchange
+
+The deployer discovers a server's catalog once through the hub route, stores
+it with the agent's deploy config, and the sidecar bundle turns it into tools
+that call through a mediated credential handle. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for why.
 
 ### Hub
 
