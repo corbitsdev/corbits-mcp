@@ -1,11 +1,10 @@
+import type { FetchLike } from "@intx/harness";
 import { type } from "arktype";
 
 import {
   OAuthDiscoveryError,
   type OAuthClientConfig,
 } from "@corbits/oauth-core";
-
-import type { FetchLike } from "./client.js";
 
 // Generic MCP-OAuth discovery (RFC 9728 protected-resource metadata, RFC 8414
 // authorization-server metadata) plus RFC 7591 dynamic client registration.
