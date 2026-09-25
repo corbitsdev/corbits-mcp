@@ -58,6 +58,9 @@
     "hono": "^4.11.9"
   },
   "peerDependenciesMeta": {
+    "@corbits/credential-mcp": {
+      "optional": true
+    },
     "@intx/db": {
       "optional": true
     },

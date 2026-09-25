@@ -37,6 +37,7 @@
         "hono": "^4.11.9",
       },
       "optionalPeers": [
+        "@corbits/credential-mcp",
         "@intx/db",
         "@intx/hub-api",
         "drizzle-orm",
