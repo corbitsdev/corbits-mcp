@@ -158,6 +158,27 @@ describe("MCP OAuth discovery", () => {
     ).rejects.toThrow(OAuthDiscoveryError);
   });
 
+  test("rejects authorization-server metadata naming a different issuer", async () => {
+    // Load-bearing: RFC 8414 §3.3 mix-up defense; a server impersonating the
+    // named issuer must not supply the endpoints.
+    const { fetchImpl } = fakeFetch({
+      "https://mcp.example.com/.well-known/oauth-protected-resource/mcp": {
+        status: 200,
+        body: {
+          resource: resourceUrl,
+          authorization_servers: ["https://auth.example.com"],
+        },
+      },
+      "https://auth.example.com/.well-known/oauth-authorization-server": {
+        status: 200,
+        body: { ...asMetadata, issuer: "https://evil.example.com" },
+      },
+    });
+    await expect(
+      discoverMcpLoginEntry({ resourceUrl, fetchImpl }),
+    ).rejects.toThrow(OAuthDiscoveryError);
+  });
+
   test("fails when neither metadata document exists", async () => {
     const { fetchImpl } = fakeFetch({});
     await expect(

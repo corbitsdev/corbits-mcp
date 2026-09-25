@@ -276,6 +276,11 @@ export async function discoverMcpLoginEntry(
     throw new OAuthDiscoveryError(
       `authorization-server metadata at ${asMetadataUrl} is malformed: ${metadata.summary}`,
     );
+  // RFC 8414 §3.3: metadata must name the issuer it was fetched for.
+  if (issuer !== undefined && metadata.issuer !== issuer)
+    throw new OAuthDiscoveryError(
+      `authorization-server metadata issuer mismatch: expected ${issuer}, got ${metadata.issuer}.`,
+    );
 
   assertSupportsS256(asMetadataUrl, metadata.code_challenge_methods_supported);
   assertSupportsPublicClients(
@@ -457,11 +462,10 @@ export function mcpClientConfig(
   if (opts.challengeScope !== undefined)
     scopeOptions.challengeScope = opts.challengeScope;
   const scopes = opts.scopes ?? selectMcpScopes(scopeOptions);
-  const extraAuthorizeParams: Record<string, string> = {
-    resource: entry.resourceUrl,
-  };
+  const extraAuthorizeParams: Record<string, string> = {};
   for (const [key, value] of Object.entries(opts.extraAuthorizeParams ?? {}))
     extraAuthorizeParams[key] = value;
+  extraAuthorizeParams.resource = entry.resourceUrl;
   return {
     clientId: opts.clientId,
     authorizeUrl: entry.authorizationServer.authorizationEndpoint,
