@@ -50,7 +50,10 @@ describe("mcpInitialize / mcpListTools / mcpCallTool over JSON", () => {
 });
 
 describe("SSE response framing", () => {
-  test("reads a JSON-RPC message out of an event-stream response", async () => {
+  test.each([
+    ["LF", "\n"],
+    ["CRLF", "\r\n"],
+  ])("reads a JSON-RPC message out of a %s event stream", async (_, eol) => {
     const server = Bun.serve({
       port: 0,
       async fetch(req) {
@@ -64,7 +67,7 @@ describe("SSE response framing", () => {
             const enc = new TextEncoder();
             controller.enqueue(
               enc.encode(
-                `data: ${JSON.stringify({ jsonrpc: "2.0", id, result: { tools: [] } })}\n\n`,
+                `event: message${eol}data: ${JSON.stringify({ jsonrpc: "2.0", id, result: { tools: [] } })}${eol}${eol}`,
               ),
             );
             controller.close();
