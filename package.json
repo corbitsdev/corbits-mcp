@@ -1,6 +1,6 @@
 {
   "name": "@corbits/mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP client tool package for Interchange: streamable HTTP, per-tool grants, OAuth.",
   "license": "LGPL-2.1-only",
   "author": "Sawyer Cutler <sawyer@dirtroad.dev>",
