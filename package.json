@@ -53,6 +53,7 @@
     "@intx/agent": ">=0.4.0"
   },
   "dependencies": {
+    "@corbits/oauth-core": "^0.1.0",
     "@intx/db": "^0.4.0",
     "@intx/hub-api": "^0.4.0",
     "@intx/types": "^0.4.0",

@@ -18,3 +18,17 @@ export {
   type McpClientOptions,
   type FetchLike,
 } from "./client.js";
+
+export {
+  discoverMcpLoginEntry,
+  registerMcpClient,
+  mcpClientConfig,
+  selectMcpScopes,
+  type DiscoverMcpLoginEntryOptions,
+  type McpAuthorizationServer,
+  type McpClientConfigOptions,
+  type McpClientRegistration,
+  type McpLoginEntry,
+  type RegisterMcpClientOptions,
+  type SelectMcpScopesOptions,
+} from "./oauth-discovery.js";
