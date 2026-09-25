@@ -6,9 +6,10 @@
   "author": "Sawyer Cutler <sawyer@dirtroad.dev>",
   "type": "module",
   "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
-    "src",
-    "!src/**/*.test.ts",
+    "dist",
     "README.md",
     "LICENSE"
   ],
@@ -16,9 +17,18 @@
     "access": "public"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./sidecar-bundle": "./src/sidecar-bundle.ts",
-    "./hub": "./src/hub/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./sidecar-bundle": {
+      "types": "./dist/sidecar-bundle.d.ts",
+      "default": "./dist/sidecar-bundle.js"
+    },
+    "./hub": {
+      "types": "./dist/hub/index.d.ts",
+      "default": "./dist/hub/index.js"
+    }
   },
   "interchange": {
     "credentials": [
@@ -29,6 +39,8 @@
     ]
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "bun run build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -37,18 +49,19 @@
     "check": "bun run typecheck && bun run lint && bun run format:check && bun run test"
   },
   "peerDependencies": {
+    "@corbits/credential-mcp": "^0.1.0",
     "@intx/agent": ">=0.4.0"
   },
   "dependencies": {
-    "@corbits/credential-mcp": "github:corbitsdev/corbits-credential-mcp#fb9ec3a6754348cd33c388c70c0830b8844c83de",
     "@intx/db": "^0.4.0",
     "@intx/hub-api": "^0.4.0",
     "@intx/types": "^0.4.0",
-    "arktype": "2.1.20",
+    "arktype": "^2.2.3",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.11.9"
   },
   "devDependencies": {
+    "@corbits/credential-mcp": "^0.1.0",
     "@eslint/js": "9.34.0",
     "@intx/agent": "0.4.0",
     "@intx/authz": "0.4.0",

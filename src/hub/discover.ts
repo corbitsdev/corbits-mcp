@@ -21,8 +21,8 @@ import {
   type FetchLike,
   type McpTool,
   type McpServerInfo,
-} from "../client";
-import { parseMcpEndpoint } from "../url";
+} from "../client.js";
+import { parseMcpEndpoint } from "../url.js";
 
 const DiscoverBody = type({
   url: "string > 0",

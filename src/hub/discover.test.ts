@@ -3,8 +3,8 @@ import { MCP_NO_TOKEN_SENTINEL } from "@corbits/credential-mcp";
 import type { TenantEnv } from "@intx/hub-api";
 import { Hono } from "hono";
 
-import { mountMcpDiscovery, type MountMcpDiscoveryOpts } from "./discover";
-import { startTestMcpServer, type TestServerHandle } from "../test-server";
+import { mountMcpDiscovery, type MountMcpDiscoveryOpts } from "./discover.js";
+import { startTestMcpServer, type TestServerHandle } from "../test-server.js";
 
 let handle: TestServerHandle | undefined;
 afterEach(() => {

@@ -6,10 +6,10 @@ import {
 } from "@intx/harness";
 import type { GrantRule } from "@intx/authz";
 
-import { mcpTools } from "./tool";
-import { isAskExempt, qualifiedName } from "./naming";
-import { startTestMcpServer, type TestServerHandle } from "./test-server";
-import type { McpTool } from "./client";
+import { mcpTools } from "./tool.js";
+import { isAskExempt, qualifiedName } from "./naming.js";
+import { startTestMcpServer, type TestServerHandle } from "./test-server.js";
+import type { McpTool } from "./client.js";
 
 let handle: TestServerHandle | undefined;
 afterEach(() => {

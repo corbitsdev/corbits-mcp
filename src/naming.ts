@@ -2,7 +2,7 @@
 // the deployed `mcpServers` sidecar bundle so both project a server's catalog
 // onto identical tool names and identical approval marks.
 
-import type { McpTool } from "./client";
+import type { McpTool } from "./client.js";
 
 /** `<server>.<tool>`, the grantable unit: `tool:<server>.*` covers a server. */
 export function qualifiedName(server: string, tool: string): string {

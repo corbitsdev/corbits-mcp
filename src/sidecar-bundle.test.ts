@@ -6,9 +6,9 @@ import {
   shapeMcpContent,
   SIDECAR_BUNDLE_ID,
   type McpServersEnv,
-} from "./sidecar-bundle";
-import { startTestMcpServer, type TestServerHandle } from "./test-server";
-import type { McpTool } from "./client";
+} from "./sidecar-bundle.js";
+import { startTestMcpServer, type TestServerHandle } from "./test-server.js";
+import type { McpTool } from "./client.js";
 
 /** The mediated-fetch call signature the bundle uses; `typeof fetch`'s extra
  * members are irrelevant to it. */
