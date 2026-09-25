@@ -39,6 +39,8 @@ entries do not.
 
 ```ts
 import { mountMcpDiscovery } from "@corbits/mcp/hub";
+import type { TenantEnv } from "@intx/hub-api";
+import { Hono } from "hono";
 
 const api = new Hono<TenantEnv>();
 mountMcpDiscovery(api, { db, cipher, requireGrant });
