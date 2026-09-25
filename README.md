@@ -24,6 +24,9 @@ never hold a server's bearer.
 
 ### Hub
 
+`./hub` needs the optional peers `@intx/db`, `@intx/hub-api`, `drizzle-orm`
+and `hono`; the root and `./sidecar-bundle` entries do not.
+
 ```ts
 import { mountMcpDiscovery } from "@corbits/mcp/hub";
 
