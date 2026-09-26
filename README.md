@@ -1,7 +1,5 @@
 # @corbits/mcp
 
-[![npm](https://img.shields.io/npm/v/@corbits/mcp.svg)](https://www.npmjs.com/package/@corbits/mcp) [![License: LGPL-2.1](https://img.shields.io/badge/license-LGPL--2.1-green.svg)](https://github.com/corbitsdev/corbits-mcp/blob/main/LICENSE)
-
 A Corbits tool pack for the Interchange sidecar that turns each tool on a remote Model Context Protocol server into its own `@intx/agent` tool, over streamable HTTP (2025-03-26 spec). It also ships a hub route for catalog discovery and OAuth discovery helpers, and the client works standalone.
 
 ## Why @corbits/mcp?

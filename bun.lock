@@ -16,7 +16,6 @@
         "@intx/db": "0.4.0",
         "@intx/harness": "0.4.0",
         "@intx/hub-api": "0.4.0",
-        "@intx/types": "0.4.0",
         "@types/bun": "1.3.9",
         "drizzle-orm": "0.45.3",
         "hono": "4.13.9",
