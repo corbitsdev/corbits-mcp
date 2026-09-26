@@ -32,7 +32,7 @@ never hold a server's bearer.
    network work at construction: the names and the `ask` marks come from the
    stored catalog.
 4. **At run time the agent only ever sees a mediated handle.** Each server's
-   credential resolves to an `http` handle (a fetch pinned to that server's
+   credential resolves to an `http` handle (a fetch pinned to the credential's
    origin that injects the bearer per request), so the token never reaches
    agent code, and a relative path is all the bundle ever asks for.
 
