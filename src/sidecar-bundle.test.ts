@@ -58,7 +58,6 @@ function envWith(
   };
   // `run` touches none of storage/audit/directors, only its own closures, so a
   // minimal same-shaped BaseEnv stub covers this call path.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const env = {
     sources: [],
     defaultSource: "x",

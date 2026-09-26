@@ -79,7 +79,6 @@ describe("mcpTools discovers a live server and floors every tool at ask", () => 
     // The factory's env-DI contract requires a full BaseEnv, but this bundle's
     // `run` touches none of storage/audit/directors -- only its own closures --
     // so a minimal same-shaped stub is sufficient for this call path.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const bundle = factory({
       sources: [],
       defaultSource: "x",
@@ -156,7 +155,6 @@ describe("env.credentials wiring: mcpTools resolves a server's fetch through the
       { credentials },
     );
     // Minimal same-shaped BaseEnv stub; see the identical note above.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const bundle = factory({
       sources: [],
       defaultSource: "x",
