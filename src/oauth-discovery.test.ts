@@ -5,8 +5,8 @@ import {
   generatePkce,
   generateState,
   OAuthDiscoveryError,
-  type FetchLike,
 } from "@corbits/oauth-core";
+import type { FetchLike } from "@intx/harness";
 
 import {
   discoverMcpLoginEntry,
@@ -94,7 +94,6 @@ function fakeFetch(routes: Record<string, { status: number; body: unknown }>): {
       headers: { "content-type": "application/json" },
     });
   };
-  impl.preconnect = () => undefined;
   return { fetchImpl: impl, requests };
 }
 
