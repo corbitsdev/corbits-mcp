@@ -148,6 +148,15 @@ function wellKnownUrl(raw: string, suffix: string): string {
   return parsed.toString();
 }
 
+// RFC 8414 §3: the issuer a well-known URL was derived from, with the same
+// trailing-slash normalization `wellKnownUrl` applies.
+function normalizedIssuer(raw: string): string {
+  const parsed = new URL(raw);
+  const path =
+    parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/$/, "");
+  return `${parsed.origin}${path}`;
+}
+
 async function getJson(
   url: string,
   fetchImpl: FetchLike,
@@ -275,10 +284,15 @@ export async function discoverMcpLoginEntry(
     throw new OAuthDiscoveryError(
       `authorization-server metadata at ${asMetadataUrl} is malformed: ${metadata.summary}`,
     );
-  // RFC 8414 §3.3: metadata must name the issuer it was fetched for.
-  if (issuer !== undefined && metadata.issuer !== issuer)
+  // RFC 8414 §3.3: metadata must name the issuer it was fetched for. In the
+  // fallback that issuer is the one the resource URL itself identifies.
+  const expectedIssuer = issuer ?? normalizedIssuer(resourceUrl);
+  if (
+    !URL.canParse(metadata.issuer) ||
+    normalizedIssuer(metadata.issuer) !== normalizedIssuer(expectedIssuer)
+  )
     throw new OAuthDiscoveryError(
-      `authorization-server metadata issuer mismatch: expected ${issuer}, got ${metadata.issuer}.`,
+      `authorization-server metadata issuer mismatch: expected ${expectedIssuer}, got ${metadata.issuer}.`,
     );
 
   assertSupportsS256(asMetadataUrl, metadata.code_challenge_methods_supported);
