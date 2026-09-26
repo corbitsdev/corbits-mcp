@@ -21,7 +21,7 @@ Runs on Node.js 24+ and Bun 1.2+.
 For the `@corbits/mcp/hub` routes, also install:
 
 ```bash
-bun add @corbits/credential-mcp @intx/authz @intx/crypto @intx/db @intx/hub-api drizzle-orm hono
+bun add @corbits/credential-http @intx/authz @intx/crypto @intx/db @intx/hub-api drizzle-orm hono
 ```
 
 ## Quickstart
@@ -46,25 +46,25 @@ Every client call takes `{ fetch }` as its last argument, for example a fetch th
 
 - **Hub:** `@corbits/mcp/hub` mounts a discovery route on an [`@intx/hub-api`](https://github.com/faremeter/interchange/tree/main/packages/hub-api) app and reads tenant credentials from [`@intx/db`](https://github.com/faremeter/interchange/tree/main/packages/db).
 - **Sidecar:** `@corbits/mcp/sidecar-bundle` builds [`@intx/agent`](https://github.com/faremeter/interchange/tree/main/packages/agent) tools from a stored catalog.
-- **Pairs with:** [`@corbits/oauth-core`](https://github.com/corbitsdev/corbits-oauth-core) for the login flow and [`@corbits/credential-mcp`](https://github.com/corbitsdev/corbits-credential-mcp) for the origin-pinned credential provider.
+- **Pairs with:** [`@corbits/oauth-core`](https://github.com/corbitsdev/corbits-oauth-core) for the login flow and [`@corbits/credential-http`](https://github.com/corbitsdev/credential-http) for the origin-pinned credential provider.
 
 ## Reference
 
-| Export                                                  | Entry                         | Purpose                                                                                                           |
-| ------------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `mcpInitialize(url, opts?)`                             | `@corbits/mcp`                | Send `initialize`; returns `serverInfo` and `protocolVersion`.                                                    |
-| `mcpListTools(url, opts?)`                              | `@corbits/mcp`                | Send `tools/list`; returns `McpTool[]`.                                                                           |
-| `mcpCallTool(url, name, args, opts?)`                   | `@corbits/mcp`                | Send `tools/call`; returns `McpToolResult`.                                                                       |
-| `mcpTools(options, env?)`                               | `@corbits/mcp`                | Discover each server live, then build tools. For hosts that can await; servers use `name` and `credentialHandle`. |
-| `qualifiedName`, `toolDescription`, `isAskExempt`       | `@corbits/mcp`                | Naming and `ask`-floor rules the tool builders use.                                                               |
-| `discoverMcpLoginEntry({ resourceUrl })`                | `@corbits/mcp`                | Resolve the authorization server (RFC 9728, then RFC 8414).                                                       |
-| `registerMcpClient(opts)`                               | `@corbits/mcp`                | Register a loopback public client (RFC 7591).                                                                     |
-| `mcpClientConfig(entry, opts)`                          | `@corbits/mcp`                | Build the `OAuthClientConfig` oauth-core's login helpers take.                                                    |
-| `selectMcpScopes(opts)`                                 | `@corbits/mcp`                | Pick scopes in the MCP spec's selection order.                                                                    |
-| `mcpServers(config)`                                    | `@corbits/mcp/sidecar-bundle` | Build tools from stored catalogs over mediated credentials.                                                       |
-| `shapeMcpContent(content)`, `SIDECAR_BUNDLE_ID`         | `@corbits/mcp/sidecar-bundle` | Result shaping and the bundle's tool id.                                                                          |
-| `mountMcpDiscovery(app, opts)`                          | `@corbits/mcp/hub`            | Mount `POST /mcp/discover`.                                                                                       |
-| `discoverMcpServer(args)`, `readCredentialSecret(opts)` | `@corbits/mcp/hub`            | The discovery and credential reads the route uses.                                                                |
+| Export                                            | Entry                         | Purpose                                                                                                           |
+| ------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `mcpInitialize(url, opts?)`                       | `@corbits/mcp`                | Send `initialize`; returns `serverInfo` and `protocolVersion`.                                                    |
+| `mcpListTools(url, opts?)`                        | `@corbits/mcp`                | Send `tools/list`; returns `McpTool[]`.                                                                           |
+| `mcpCallTool(url, name, args, opts?)`             | `@corbits/mcp`                | Send `tools/call`; returns `McpToolResult`.                                                                       |
+| `mcpTools(options, env?)`                         | `@corbits/mcp`                | Discover each server live, then build tools. For hosts that can await; servers use `name` and `credentialHandle`. |
+| `qualifiedName`, `toolDescription`, `isAskExempt` | `@corbits/mcp`                | Naming and `ask`-floor rules the tool builders use.                                                               |
+| `discoverMcpLoginEntry({ resourceUrl })`          | `@corbits/mcp`                | Resolve the authorization server (RFC 9728, then RFC 8414).                                                       |
+| `registerMcpClient(opts)`                         | `@corbits/mcp`                | Register a loopback public client (RFC 7591).                                                                     |
+| `mcpClientConfig(entry, opts)`                    | `@corbits/mcp`                | Build the `OAuthClientConfig` oauth-core's login helpers take.                                                    |
+| `selectMcpScopes(opts)`                           | `@corbits/mcp`                | Pick scopes in the MCP spec's selection order.                                                                    |
+| `mcpServers(config)`                              | `@corbits/mcp/sidecar-bundle` | Build tools from stored catalogs over mediated credentials.                                                       |
+| `shapeMcpContent(content)`, `SIDECAR_BUNDLE_ID`   | `@corbits/mcp/sidecar-bundle` | Result shaping and the bundle's tool id.                                                                          |
+| `mountMcpDiscovery(app, opts)`                    | `@corbits/mcp/hub`            | Mount `POST /mcp/discover`.                                                                                       |
+| `discoverMcpServer(args)`, `readCredential(opts)` | `@corbits/mcp/hub`            | The discovery and credential reads the route uses.                                                                |
 
 `McpToolSchema` validates a catalog entry (`McpTool`). Transport and protocol failures throw `McpError`. OAuth discovery failures throw `OAuthDiscoveryError` from `@corbits/oauth-core`.
 
@@ -112,7 +112,30 @@ mountMcpDiscovery(mcpRoutes, {
 
 Mount `mcpRoutes` on the hub app under `/api/tenants/:tenantId`, behind the hub's auth and tenant middleware.
 
-`POST /api/tenants/:tenantId/mcp/discover` with `{ url, credentialId? }` returns `{ data: { serverInfo, tools } }`. `url` must be https (http only on loopback). `credentialId` names a tenant credential whose secret is sent as a bearer; a credential holding `MCP_NO_TOKEN_SENTINEL` from `@corbits/credential-mcp` sends no `authorization` header. Errors: 400 for a bad body or URL, 404 for an unknown credential, 422 when the server fails discovery. `requireGrant` is the host's own grant middleware for this route. The fetch is pinned to the server's origin and refuses redirects, so the secret never leaves that origin.
+`POST /api/tenants/:tenantId/mcp/discover` with `{ url, credentialId? }` returns `{ data: { serverInfo, tools } }`. `url` must be https (http only on loopback). `credentialId` names a tenant credential whose secret is sent as a bearer; a credential holding `MCP_NO_TOKEN_SENTINEL` from `@corbits/credential-http` sends no `authorization` header. Errors: 400 for a bad body or URL, 404 for an unknown credential, 422 when the server fails discovery or the request would leave the credential's origin. `requireGrant` is the host's own grant middleware for this route.
+
+When a secret is sent, the fetch is pinned to the origin of the credential's provider `apiBaseUrl`; with no credential or a keyless one, to the URL's origin. Redirects are always refused, so the secret never leaves that origin.
+
+#### Extra origins
+
+Some servers serve MCP on a different origin from the one their credential is issued for. Nothing is allowed off the pinned origin by default. The host lists extra origins per pinned origin in `extraOrigins`, which is passed through to `@corbits/credential-http`:
+
+```ts
+mountMcpDiscovery(mcpRoutes, {
+  db,
+  cipher,
+  requireGrant: requireGrant("credential:*", "read"),
+  extraOrigins: {
+    "https://api.example.com": ["https://mcp.example.net"],
+  },
+});
+```
+
+| Option         | Type                                          | Default |
+| -------------- | --------------------------------------------- | ------- |
+| `extraOrigins` | `Readonly<Record<string, readonly string[]>>` | `{}`    |
+
+A credential pinned to `https://api.example.com` may then be sent to `https://mcp.example.net`; no other credential can. `discoverMcpServer` takes the same option. For the sidecar bundle, configure the same allowance on the credential provider the host registers.
 
 ### Load the sidecar bundle
 
@@ -136,7 +159,7 @@ export const tools = mcpServers({
 
 Each catalog entry becomes a tool named `<handle>.<tool>`, with the remote `inputSchema` passed through and the call proxied to `tools/call`. Text content comes back as text and anything else as JSON; `isError` passes through. A handle that does not resolve, or a server that fails `initialize`, fails only that server's calls.
 
-`handle` is the credential handle the host binds this server's token to. The bundle resolves it from the runtime `credentials` capability and expects an `http` credential, such as the one `@corbits/credential-mcp`'s provider returns. The package manifest declares the `mcp-server` credential for this.
+`handle` is the credential handle the host binds this server's token to. The bundle resolves it from the runtime `credentials` capability and expects an `http` credential, such as the one `@corbits/credential-http`'s MCP provider returns. The package manifest declares the `mcp-server` credential for this.
 
 ### Grant access
 
@@ -146,7 +169,9 @@ Grant the agent's principal `tool:deepwiki.*` for the whole server, or `tool:dee
 
 - Existing server configs, stored catalogs and the `mcp-server` credential keep working unchanged.
 - `@intx/harness` is a required peer. Import `FetchLike` from it; `@corbits/mcp` no longer exports that type.
-- `@intx/db`, `@intx/hub-api`, `drizzle-orm`, `hono` and `@corbits/credential-mcp` are optional peers. Install them if you use `@corbits/mcp/hub`.
+- `@intx/db`, `@intx/hub-api`, `drizzle-orm`, `hono` and `@corbits/credential-http` are optional peers. Install them if you use `@corbits/mcp/hub`. `@corbits/credential-http` replaces `@corbits/credential-mcp`.
+- Discovery with a credential pins to the credential's provider `apiBaseUrl` origin, not to the requested URL's origin. A credential with a secret whose provider has no `apiBaseUrl` is refused, and a URL on another origin needs `extraOrigins`. No origin is allowed by default.
+- `readCredentialSecret` is now `readCredential`, which returns `{ secret, origin? }`. `discoverMcpServer` takes `credential: { secret, origin? }` instead of `secret`.
 - `@intx/agent` and `@intx/harness` peers are `^0.4.0`.
 - Discovery rejects authorization-server metadata whose `issuer` differs from the one the protected resource names.
 

@@ -1,17 +1,17 @@
 // Server-side MCP catalog discovery. The browser never holds an MCP server's
 // token, so the only place an OAuth-protected server's `tools/list` can be
 // read is here, behind the hub's own tenant-member gate and with the secret
-// decrypted in this process and sent only to the server's own origin.
+// decrypted in this process and sent only to the credential's own origin.
 
 import type { DB } from "@intx/db";
-import { credential } from "@intx/db/schema";
+import { credential, provider } from "@intx/db/schema";
 import type { FetchLike } from "@intx/harness";
 import type { TenantEnv } from "@intx/hub-api";
 import { credentialAad, type CredentialCipher } from "@intx/types";
 import {
+  createOriginPinnedFetch,
   MCP_NO_TOKEN_SENTINEL,
-  mcpOriginPinnedFetch,
-} from "@corbits/credential-mcp";
+} from "@corbits/credential-http";
 import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
 import type { Hono, MiddlewareHandler } from "hono";
@@ -34,23 +34,41 @@ export type MountMcpDiscoveryOpts = {
   readonly cipher: CredentialCipher;
   /** The host's stock grant middleware, so authority is checked exactly once, its way. */
   readonly requireGrant: MiddlewareHandler<TenantEnv>;
+  /**
+   * Further origins a credential may be sent to, keyed by the credential's
+   * pinned origin, for a server whose MCP endpoint is not on that origin.
+   * Passed through to `@corbits/credential-http`. Empty by default.
+   */
+  readonly extraOrigins?: Readonly<Record<string, readonly string[]>>;
   /** Reported when a discovery attempt fails; the caller only sees a message. */
   readonly onError?: (error: unknown, context: { url: string }) => void;
 };
 
+export type McpCredential = {
+  readonly secret: string;
+  /** The provider's API origin the secret is pinned to, when it has one. */
+  readonly origin?: string;
+};
+
 /**
- * Read a tenant credential's decrypted secret. Scoped by tenant so a
- * credential id from another tenant reads as absent, not as a secret.
+ * Read a tenant credential's decrypted secret and the origin it is pinned to.
+ * Scoped by tenant so a credential id from another tenant reads as absent,
+ * not as a secret.
  */
-export async function readCredentialSecret(opts: {
+export async function readCredential(opts: {
   readonly db: DB["db"];
   readonly cipher: CredentialCipher;
   readonly tenantId: string;
   readonly credentialId: string;
-}): Promise<string | undefined> {
+}): Promise<McpCredential | undefined> {
   const [row] = await opts.db
-    .select()
+    .select({
+      id: credential.id,
+      secret: credential.secret,
+      apiBaseUrl: provider.apiBaseUrl,
+    })
     .from(credential)
+    .innerJoin(provider, eq(provider.id, credential.providerId))
     .where(
       and(
         eq(credential.id, opts.credentialId),
@@ -58,8 +76,14 @@ export async function readCredentialSecret(opts: {
       ),
     )
     .limit(1);
-  if (row === undefined || row.secret === null) return undefined;
-  return opts.cipher.decrypt(row.secret, credentialAad(row.id, "secret"));
+  if (row === undefined) return undefined;
+  const secret = await opts.cipher.decrypt(
+    row.secret,
+    credentialAad(row.id, "secret"),
+  );
+  return row.apiBaseUrl === null
+    ? { secret }
+    : { secret, origin: new URL(row.apiBaseUrl).origin };
 }
 
 /** A 3xx would send the bearer onward, so the pinned fetch's manual redirect
@@ -81,22 +105,36 @@ export type McpDiscovery = {
   readonly tools: readonly McpTool[];
 };
 
-/** Handshake and read a server's catalog over an origin-pinned fetch. */
+/**
+ * Handshake and read a server's catalog over a fetch pinned to the
+ * credential's origin, or to the URL's origin when no secret is sent.
+ */
 export async function discoverMcpServer(args: {
   readonly url: string;
-  readonly secret?: string;
+  readonly credential?: McpCredential;
+  readonly extraOrigins?: Readonly<Record<string, readonly string[]>>;
   readonly fetch?: FetchLike;
 }): Promise<McpDiscovery> {
   const target = parseMcpEndpoint(args.url);
+  const secret = args.credential?.secret;
   const token =
-    args.secret === undefined || args.secret === MCP_NO_TOKEN_SENTINEL
+    secret === undefined || secret === MCP_NO_TOKEN_SENTINEL
       ? undefined
-      : args.secret;
+      : secret;
+  if (token !== undefined && args.credential?.origin === undefined) {
+    throw new Error("the credential's provider has no API origin to pin to");
+  }
+  const origin = args.credential?.origin ?? target.origin;
+  const extraOrigins = Object.entries(args.extraOrigins ?? {}).flatMap(
+    ([pinned, extra]) => (new URL(pinned).origin === origin ? extra : []),
+  );
   const pinned = refusingRedirects(
-    mcpOriginPinnedFetch({
-      pinnedOrigin: target.origin,
-      readToken: () => token,
-      ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
+    createOriginPinnedFetch({
+      origin,
+      header: "authorization",
+      readValue: () => (token === undefined ? undefined : `Bearer ${token}`),
+      extraOrigins,
+      fetch: args.fetch ?? globalThis.fetch,
     }),
   );
   const serverInfo = await mcpInitialize(args.url, { fetch: pinned });
@@ -129,21 +167,24 @@ export function mountMcpDiscovery(
     }
 
     try {
-      const secret =
+      const found =
         body.credentialId === undefined
           ? undefined
-          : await readCredentialSecret({
+          : await readCredential({
               db: opts.db,
               cipher: opts.cipher,
               tenantId: c.get("tenant").id,
               credentialId: body.credentialId,
             });
-      if (body.credentialId !== undefined && secret === undefined) {
+      if (body.credentialId !== undefined && found === undefined) {
         return c.json({ error: "credential not found" }, 404);
       }
       const data = await discoverMcpServer({
         url: body.url,
-        ...(secret !== undefined ? { secret } : {}),
+        ...(found !== undefined ? { credential: found } : {}),
+        ...(opts.extraOrigins !== undefined
+          ? { extraOrigins: opts.extraOrigins }
+          : {}),
       });
       return c.json({ data });
     } catch (cause) {

@@ -59,7 +59,7 @@
     "arktype": "^2.2.3"
   },
   "devDependencies": {
-    "@corbits/credential-mcp": "^0.1.0",
+    "@corbits/credential-http": "file:./vendor/corbits-credential-http-0.1.0.tgz",
     "@intx/agent": "0.4.0",
     "@intx/authz": "0.4.0",
     "@intx/db": "0.4.0",
@@ -73,7 +73,7 @@
     "typescript": "5.9.3"
   },
   "peerDependencies": {
-    "@corbits/credential-mcp": "^0.1.0",
+    "@corbits/credential-http": "^0.1.0",
     "@intx/agent": "^0.4.0",
     "@intx/db": "^0.4.0",
     "@intx/harness": "^0.4.0",
@@ -82,7 +82,7 @@
     "hono": "^4.11.9"
   },
   "peerDependenciesMeta": {
-    "@corbits/credential-mcp": {
+    "@corbits/credential-http": {
       "optional": true
     },
     "@intx/db": {
