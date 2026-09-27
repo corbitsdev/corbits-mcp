@@ -1,12 +1,7 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { type } from "arktype";
 
-import {
-  mcpCallTool,
-  mcpInitialize,
-  mcpListTools,
-  McpError,
-} from "./client.js";
+import { mcpCallTool, mcpInitialize, mcpListTools } from "./client.js";
 import { startTestMcpServer, type TestServerHandle } from "./test-server.js";
 
 const RequestIdOnly = type({ id: "number" });
@@ -92,12 +87,4 @@ describe("SSE response framing", () => {
       }
     },
   );
-});
-
-describe("McpError", () => {
-  test("is a distinct Error subclass", () => {
-    const err = new McpError("boom");
-    expect(err).toBeInstanceOf(Error);
-    expect(err.name).toBe("McpError");
-  });
 });

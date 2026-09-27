@@ -159,7 +159,7 @@ export async function mcpInitialize(
     {
       protocolVersion: "2025-03-26",
       capabilities: {},
-      clientInfo: { name: "@corbits/mcp", version: "0.1.0" },
+      clientInfo: { name: "@corbits/mcp", version: "0.2.0" },
     },
     opts,
   );

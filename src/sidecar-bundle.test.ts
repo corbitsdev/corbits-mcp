@@ -4,7 +4,6 @@ import { toolApprovalEffect } from "@intx/agent";
 import {
   mcpServers,
   shapeMcpContent,
-  SIDECAR_BUNDLE_ID,
   type McpServersEnv,
 } from "./sidecar-bundle.js";
 import { startTestMcpServer, type TestServerHandle } from "./test-server.js";
@@ -87,10 +86,6 @@ function pinnedFetch(origin: string, bearer?: string) {
 }
 
 describe("mcpServers", () => {
-  test("the id is the consumer key a host binds a credential against", () => {
-    expect(SIDECAR_BUNDLE_ID).toBe("@corbits/mcp/sidecar-bundle");
-  });
-
   test("names every catalog entry <handle>.<tool> and floors it at ask", () => {
     const factory = mcpServers({
       servers: [

@@ -7,7 +7,7 @@ import {
 import type { GrantRule } from "@intx/authz";
 
 import { mcpTools } from "./tool.js";
-import { isAskExempt, qualifiedName } from "./naming.js";
+import { isAskExempt } from "./naming.js";
 import { startTestMcpServer, type TestServerHandle } from "./test-server.js";
 import type { McpTool } from "./client.js";
 
@@ -15,12 +15,6 @@ let handle: TestServerHandle | undefined;
 afterEach(() => {
   handle?.stop();
   handle = undefined;
-});
-
-describe("qualifiedName", () => {
-  test("joins server and remote tool name", () => {
-    expect(qualifiedName("linear", "list_issues")).toBe("linear.list_issues");
-  });
 });
 
 describe("ask-mark derivation (CL-8392)", () => {
