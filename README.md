@@ -93,6 +93,15 @@ Every generated tool starts `ask`-marked. Listing `"<handle>.<tool>"` in
 `allowWithoutAsk` is the only way to lower that mark, and it is ignored for
 any remote tool the server flags `destructiveHint: true`.
 
+## OAuth discovery
+
+`discoverMcpLoginEntry` resolves an MCP server's authorization server (RFC
+9728, then RFC 8414), `registerMcpClient` registers a loopback public client
+(RFC 7591), and `mcpClientConfig` builds the `OAuthClientConfig` that
+`@corbits/oauth-core`'s login and token helpers take. Scopes follow the MCP
+spec's selection order (`selectMcpScopes`). Failures throw oauth-core's
+`OAuthDiscoveryError`.
+
 ## License
 
 LGPL-2.1-only.
