@@ -5,9 +5,10 @@
 ```sh
 bun install
 bun run check
+bun run test:e2e
 ```
 
-`bun run check` runs typecheck, lint, format check and unit tests. `bun run format` rewrites the tree.
+`bun run check` runs typecheck, lint, format check and unit tests. `bun run test:e2e` runs the client against the official SDK's server transports. `bun run format` rewrites the tree.
 
 Contributors sign the [CLA](CLA.md) on their first PR; the CLA bot explains how.
 

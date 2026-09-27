@@ -169,9 +169,17 @@ export async function discoverMcpServer(args: {
     fetch: pinned,
     timeoutMs: args.timeoutMs ?? DISCOVERY_TIMEOUT_MS,
   };
-  const serverInfo = await mcpInitialize(args.url, client);
-  const tools = await mcpListTools(args.url, client);
-  return { serverInfo, tools };
+  const session = await mcpInitialize(args.url, client);
+  const tools = await mcpListTools(args.url, { ...client, session });
+  return {
+    serverInfo: {
+      protocolVersion: session.protocolVersion,
+      ...(session.serverInfo !== undefined
+        ? { serverInfo: session.serverInfo }
+        : {}),
+    },
+    tools,
+  };
 }
 
 /**

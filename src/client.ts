@@ -1,6 +1,7 @@
-// MCP streamable-HTTP transport client (2025-03-26 spec): no session id or
-// resumption because this client only ever sends one request and awaits
-// its one reply, which is all initialize/tools-list/tools-call need.
+// MCP streamable-HTTP transport client (2025-03-26 spec). Each call sends one
+// request and awaits its one reply, which is all initialize/tools-list/
+// tools-call need; the session `initialize` opens is carried in `session`.
+// No resumption.
 
 import type { FetchLike } from "@intx/harness";
 import { type } from "arktype";
@@ -30,10 +31,14 @@ export interface McpClientOptions {
   timeoutMs?: number;
   /** Abort the request when this fires, e.g. a cancelled tool call. */
   signal?: AbortSignal;
+  /** The session `mcpInitialize` opened; required by stateful servers. */
+  session?: McpSession;
 }
 
 /** The run-time `tools/call` and `initialize` bound when a caller sets none. */
 export const DEFAULT_TIMEOUT_MS = 60_000;
+
+const PROTOCOL_VERSION = "2025-03-26";
 
 /** Largest response body or SSE frame read before the stream is cancelled. */
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
@@ -54,6 +59,31 @@ export class McpError extends Error {
 
 let nextId = 1;
 
+/** A reply to request `id`: a message carrying `result` or `error` and no
+ * `method`, which would make it a server request reusing the id. */
+function isResponseTo(message: unknown, id: number): boolean {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    (message as { id?: unknown }).id === id &&
+    !("method" in message) &&
+    ("result" in message || "error" in message)
+  );
+}
+
+function headersFor(session: McpSession | undefined): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    ...(session === undefined
+      ? {}
+      : { "mcp-protocol-version": session.protocolVersion }),
+    ...(session?.sessionId === undefined
+      ? {}
+      : { "mcp-session-id": session.sessionId }),
+  };
+}
+
 /**
  * Send one JSON-RPC request over streamable HTTP and return its `result`.
  * Handles both response shapes the spec allows: a direct `application/json`
@@ -65,7 +95,7 @@ async function sendRequest(
   method: string,
   params: Record<string, unknown> | undefined,
   opts: McpClientOptions,
-): Promise<unknown> {
+): Promise<{ result: unknown; sessionId: string | undefined }> {
   const fetchImpl = opts.fetch ?? fetch;
   const id = nextId++;
   const timeout =
@@ -75,13 +105,11 @@ async function sendRequest(
   const signals = [timeout, opts.signal].filter((s) => s !== undefined);
   const signal = signals.length > 0 ? AbortSignal.any(signals) : undefined;
   let message: unknown;
+  let sessionId: string | undefined;
   try {
     const response = await fetchImpl(url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json, text/event-stream",
-      },
+      headers: headersFor(opts.session),
       body: JSON.stringify({
         jsonrpc: "2.0",
         id,
@@ -98,6 +126,7 @@ async function sendRequest(
       );
     }
 
+    sessionId = response.headers.get("mcp-session-id") ?? undefined;
     const contentType = response.headers.get("content-type") ?? "";
     message = contentType.includes("text/event-stream")
       ? await readSseJsonRpc(response, id, signal)
@@ -115,9 +144,9 @@ async function sendRequest(
   }
 
   const parsed = JsonRpcResponse(message);
-  if (parsed instanceof type.errors) {
+  if (parsed instanceof type.errors || !isResponseTo(message, id)) {
     throw new McpError(
-      `MCP server ${url} sent a malformed response to ${method}: ${parsed.summary}`,
+      `MCP server ${url} sent a malformed response to ${method}${parsed instanceof type.errors ? `: ${parsed.summary}` : ""}`,
     );
   }
   if (parsed.error !== undefined) {
@@ -125,7 +154,42 @@ async function sendRequest(
       `MCP server ${url} rejected ${method}: ${parsed.error.message}`,
     );
   }
-  return parsed.result;
+  return { result: parsed.result, sessionId };
+}
+
+/** Send a JSON-RPC notification; the server answers 202 with no body. */
+async function sendNotification(
+  url: string,
+  method: string,
+  opts: McpClientOptions,
+): Promise<void> {
+  const fetchImpl = opts.fetch ?? fetch;
+  const timeout =
+    opts.timeoutMs === undefined
+      ? undefined
+      : AbortSignal.timeout(opts.timeoutMs);
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method: "POST",
+      headers: headersFor(opts.session),
+      body: JSON.stringify({ jsonrpc: "2.0", method }),
+      ...(timeout !== undefined ? { signal: timeout } : {}),
+    });
+  } catch (cause) {
+    if (timeout?.aborted === true) {
+      throw new McpError(
+        `MCP server ${url} did not answer ${method} within ${String(opts.timeoutMs)}ms`,
+      );
+    }
+    throw cause;
+  }
+  await response.body?.cancel();
+  if (!response.ok) {
+    throw new McpError(
+      `MCP server ${url} responded ${response.status} to ${method}`,
+    );
+  }
 }
 
 function parseJson(text: string): unknown {
@@ -201,15 +265,13 @@ async function readSseJsonRpc(
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trim());
       if (dataLines.length === 0) continue;
-      const candidate: unknown = JSON.parse(dataLines.join("\n"));
-      if (
-        typeof candidate === "object" &&
-        candidate !== null &&
-        "id" in candidate &&
-        (candidate as { id: unknown }).id === id
-      ) {
-        return candidate;
+      let candidate: unknown;
+      try {
+        candidate = JSON.parse(dataLines.join("\n"));
+      } catch {
+        continue;
       }
+      if (isResponseTo(candidate, id)) return candidate;
     }
   }
   throw new McpError(
@@ -223,24 +285,56 @@ const InitializeResult = type({
 });
 export type McpServerInfo = typeof InitializeResult.infer;
 
-/** `initialize` handshake. The server's own identification is returned for a
- * caller that shows it; nothing here depends on it. */
+export type McpSession = {
+  /** The negotiated version, sent as `MCP-Protocol-Version`. */
+  readonly protocolVersion: string;
+  /** The `Mcp-Session-Id` a stateful server assigned, if any. */
+  readonly sessionId?: string;
+  /** The server's own identification, for a caller that shows it. */
+  readonly serverInfo?: NonNullable<McpServerInfo["serverInfo"]>;
+};
+
+/** `initialize` handshake followed by `notifications/initialized`. Pass the
+ * returned session to every later call on this server. */
 export async function mcpInitialize(
   url: string,
   opts: McpClientOptions = {},
-): Promise<McpServerInfo> {
-  const result = await sendRequest(
+): Promise<McpSession> {
+  const { result, sessionId } = await sendRequest(
     url,
     "initialize",
     {
-      protocolVersion: "2025-03-26",
+      protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "@corbits/mcp", version: "0.2.0" },
     },
-    opts,
+    {
+      ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    },
   );
   const parsed = InitializeResult(result);
-  return parsed instanceof type.errors ? {} : parsed;
+  const info = parsed instanceof type.errors ? {} : parsed;
+  // Echoed into the MCP-Protocol-Version header, so printable ASCII only.
+  if (
+    info.protocolVersion !== undefined &&
+    !/^[\x20-\x7e]+$/.test(info.protocolVersion)
+  ) {
+    throw new McpError(
+      `MCP server ${url} sent a protocolVersion that is not printable ASCII`,
+    );
+  }
+  const session: McpSession = {
+    protocolVersion: info.protocolVersion ?? PROTOCOL_VERSION,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(info.serverInfo !== undefined ? { serverInfo: info.serverInfo } : {}),
+  };
+  await sendNotification(url, "notifications/initialized", {
+    ...opts,
+    session,
+  });
+  return session;
 }
 
 const ToolsListResult = type({ tools: McpToolSchema.array() });
@@ -250,7 +344,7 @@ export async function mcpListTools(
   url: string,
   opts: McpClientOptions = {},
 ): Promise<McpTool[]> {
-  const result = await sendRequest(url, "tools/list", undefined, opts);
+  const { result } = await sendRequest(url, "tools/list", undefined, opts);
   const parsed = ToolsListResult(result);
   if (parsed instanceof type.errors) {
     throw new McpError(
@@ -272,7 +366,7 @@ export async function mcpCallTool(
   toolArguments: Record<string, unknown>,
   opts: McpClientOptions = {},
 ): Promise<McpToolResult> {
-  const result = await sendRequest(
+  const { result } = await sendRequest(
     url,
     "tools/call",
     { name, arguments: toolArguments },

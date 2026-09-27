@@ -17,6 +17,7 @@ import {
   mcpCallTool,
   mcpInitialize,
   mcpListTools,
+  type McpClientOptions,
   type McpTool,
 } from "./client.js";
 import { isAskExempt, qualifiedName, toolDescription } from "./naming.js";
@@ -94,8 +95,8 @@ export async function mcpTools(
       ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
       timeoutMs,
     };
-    await mcpInitialize(server.url, clientOpts);
-    const tools = await mcpListTools(server.url, clientOpts);
+    const session = await mcpInitialize(server.url, clientOpts);
+    const tools = await mcpListTools(server.url, { ...clientOpts, session });
     for (const tool of tools) {
       discovered.push({
         server,
@@ -133,6 +134,25 @@ export async function mcpTools(
       for (const server of options.servers) {
         fetchByServer.set(server.name, resolveFetch(server, env.credentials));
       }
+      // One session per server, opened on first use and reopened after a
+      // failed call in case the server expired it.
+      const clientByServer = new Map<string, Promise<McpClientOptions>>();
+      function connect(server: McpServerConfig): Promise<McpClientOptions> {
+        let client = clientByServer.get(server.name);
+        if (client === undefined) {
+          client = (async () => {
+            const clientFetch = await fetchByServer.get(server.name);
+            const opts = {
+              ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
+              timeoutMs,
+            };
+            const session = await mcpInitialize(server.url, opts);
+            return { ...opts, session };
+          })();
+          clientByServer.set(server.name, client);
+        }
+        return client;
+      }
 
       return {
         definitions: toolDefinitions,
@@ -146,17 +166,17 @@ export async function mcpTools(
             };
           }
           try {
-            const clientFetch = await fetchByServer.get(found.server.name);
-            const result = await mcpCallTool(
-              found.server.url,
-              found.tool.name,
-              call.arguments,
-              {
-                ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
-                timeoutMs,
-                signal,
-              },
-            );
+            const result = await connect(found.server)
+              .then((client) =>
+                mcpCallTool(found.server.url, found.tool.name, call.arguments, {
+                  ...client,
+                  signal,
+                }),
+              )
+              .catch((cause: unknown) => {
+                clientByServer.delete(found.server.name);
+                throw cause;
+              });
             return {
               callId: call.id,
               isError: result.isError === true,

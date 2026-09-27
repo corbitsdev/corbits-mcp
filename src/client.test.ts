@@ -1,7 +1,12 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { type } from "arktype";
 
-import { mcpCallTool, mcpInitialize, mcpListTools } from "./client.js";
+import {
+  McpError,
+  mcpCallTool,
+  mcpInitialize,
+  mcpListTools,
+} from "./client.js";
 import { startTestMcpServer, type TestServerHandle } from "./test-server.js";
 
 const RequestIdOnly = type({ id: "number" });
@@ -217,5 +222,133 @@ describe("bounded reads", () => {
     } finally {
       void server.stop(true);
     }
+  });
+});
+
+describe("JSON-RPC response matching", () => {
+  function sseReply(frames: (id: number) => string) {
+    return Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const parsed = RequestIdOnly(await req.json());
+        if (parsed instanceof type.errors) {
+          return new Response(null, { status: 202 });
+        }
+        return new Response(frames(parsed.id), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+  }
+  const reply = (id: number) =>
+    `data: ${JSON.stringify({ jsonrpc: "2.0", id, result: { tools: [] } })}\n\n`;
+
+  test("a non-JSON data frame is skipped", async () => {
+    const server = sseReply((id) => `data: ping\n\n${reply(id)}`);
+    try {
+      expect(await mcpListTools(server.url.toString())).toEqual([]);
+    } finally {
+      void server.stop(true);
+    }
+  });
+
+  test("a server request reusing the id is not taken as the response", async () => {
+    const server = sseReply(
+      (id) =>
+        `data: ${JSON.stringify({ jsonrpc: "2.0", id, method: "sampling/createMessage", result: {} })}\n\n${reply(id)}`,
+    );
+    try {
+      expect(await mcpListTools(server.url.toString())).toEqual([]);
+    } finally {
+      void server.stop(true);
+    }
+  });
+});
+
+describe("sessions", () => {
+  test("initialize's session id, the initialized notification and the protocol version reach later requests", async () => {
+    const seen: { method: string; headers: Headers }[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = (await req.json()) as { id?: number; method: string };
+        seen.push({ method: body.method, headers: req.headers });
+        if (body.id === undefined) return new Response(null, { status: 202 });
+        const result =
+          body.method === "initialize"
+            ? { protocolVersion: "2025-03-26", capabilities: {} }
+            : { tools: [] };
+        return Response.json(
+          { jsonrpc: "2.0", id: body.id, result },
+          { headers: { "mcp-session-id": "sess-1" } },
+        );
+      },
+    });
+    try {
+      const url = server.url.toString();
+      const session = await mcpInitialize(url);
+      expect(session).toEqual({
+        protocolVersion: "2025-03-26",
+        sessionId: "sess-1",
+      });
+      await mcpListTools(url, { session });
+      expect(seen.map((s) => s.method)).toEqual([
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+      ]);
+      expect(seen[0]?.headers.has("mcp-session-id")).toBe(false);
+      for (const { headers } of seen.slice(1)) {
+        expect(headers.get("mcp-session-id")).toBe("sess-1");
+        expect(headers.get("mcp-protocol-version")).toBe("2025-03-26");
+      }
+    } finally {
+      void server.stop(true);
+    }
+  });
+});
+
+describe("initialize hardening", () => {
+  /** Answers initialize with `protocolVersion`, and the notification with
+   * `notification`. */
+  function stub(
+    protocolVersion: string,
+    notification: (signal: AbortSignal | undefined) => Promise<Response>,
+  ) {
+    return async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { id?: number };
+      if (body.id === undefined) {
+        return notification(init?.signal ?? undefined);
+      }
+      return Response.json({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: { protocolVersion, capabilities: {} },
+      });
+    };
+  }
+  const accepted = () => Promise.resolve(new Response(null, { status: 202 }));
+
+  test("a protocolVersion with control characters is refused", async () => {
+    const fetch = stub("2025-03-26\r\nX-Injected: 1", accepted);
+    await expect(mcpInitialize("http://srv/mcp", { fetch })).rejects.toThrow(
+      "not printable ASCII",
+    );
+  });
+
+  test("a stalled initialized notification times out as McpError", async () => {
+    const fetch = stub(
+      "2025-03-26",
+      (signal) =>
+        new Promise((_, reject) =>
+          signal?.addEventListener("abort", () => reject(signal.reason)),
+        ),
+    );
+    const failure = await mcpInitialize("http://srv/mcp", {
+      fetch,
+      timeoutMs: 50,
+    }).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(McpError);
+    expect((failure as Error).message).toContain("within 50ms");
   });
 });

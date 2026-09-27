@@ -40,7 +40,7 @@ never hold a server's bearer.
 
 The client in `src/client.ts` is hand-rolled on purpose. It only sends
 `initialize`, `tools/list` and `tools/call`, each as one request awaiting one
-reply; in the sidecar bundle that request goes through a fetch the mediated
+reply, plus the `notifications/initialized` notification; in the sidecar bundle that request goes through a fetch the mediated
 credential handle pins to the server's origin. That needs only JSON-RPC
 framing and reading the matching `data:` frame from an event-stream reply.
 
@@ -48,13 +48,14 @@ The SDK's streamable-HTTP client transport is built for long-lived sessions
 (resumable streams, server-initiated requests) and installs `zod`, `ajv`,
 `express` and more, none of which this package uses.
 
-The cost: the client never sends `Mcp-Session-Id`, so a server that issues
-one on `initialize` and requires it afterwards rejects `tools/list` and
-`tools/call`. Notifications and server-to-client requests are not
-supported either.
+The session a stateful server issues on `initialize` is carried in
+`McpSession` and sent as `Mcp-Session-Id` with `MCP-Protocol-Version` on
+every later request. Resumable streams and server-to-client requests are not
+supported. `e2e/` runs discovery and tool calls against the SDK's stateless
+and stateful server transports; the SDK is a devDependency only.
 
 ## Local development
 
 ```sh
-bun install && bun run check
+bun install && bun run check && bun run test:e2e
 ```
