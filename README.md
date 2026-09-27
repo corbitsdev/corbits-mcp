@@ -8,7 +8,7 @@ A Corbits tool pack for the Interchange sidecar that turns each tool on a remote
 2. **The agent never holds the server's token.** Calls go through a mediated credential: a fetch pinned to the server's origin that adds the bearer per request.
 3. **Destructive tools stay behind approval.** Every generated tool starts `ask`-marked, and a tool the server flags `destructiveHint: true` cannot be lowered to `allow`.
 
-It supports `initialize`, `tools/list` and `tools/call` only. It does not send `Mcp-Session-Id`, so servers that require a session are not supported.
+It supports `initialize`, `tools/list` and `tools/call` only, against stateless and stateful (`Mcp-Session-Id`) servers.
 
 ## Install
 
@@ -32,13 +32,13 @@ Lists the tools on a public MCP server:
 import { mcpInitialize, mcpListTools } from "@corbits/mcp";
 
 const url = "https://mcp.deepwiki.com/mcp";
-await mcpInitialize(url);
-for (const tool of await mcpListTools(url)) {
+const session = await mcpInitialize(url);
+for (const tool of await mcpListTools(url, { session })) {
   console.log(`${tool.name}: ${tool.description ?? ""}`);
 }
 ```
 
-Every client call takes `{ fetch, timeoutMs, signal }` as its last argument, for example a fetch that adds an `Authorization` header. `timeoutMs` covers the request and reading its body, and `signal` cancels both. `mcpTools` and `mcpServers` take a `timeoutMs` option, 60 seconds by default, and pass each tool call's abort signal through, so a stalling server fails that call instead of hanging it. A response body or event-stream frame over 4 MiB is refused and the stream cancelled.
+Every client call takes `{ fetch, timeoutMs, signal, session }` as its last argument, for example a fetch that adds an `Authorization` header. `timeoutMs` covers the request and reading its body, and `signal` cancels both. `mcpTools` and `mcpServers` take a `timeoutMs` option, 60 seconds by default, and pass each tool call's abort signal through, so a stalling server fails that call instead of hanging it. A response body or event-stream frame over 4 MiB is refused and the stream cancelled.
 
 ## Where it fits
 
@@ -52,7 +52,7 @@ Every client call takes `{ fetch, timeoutMs, signal }` as its last argument, for
 
 | Export                                            | Entry                         | Purpose                                                                                                           |
 | ------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `mcpInitialize(url, opts?)`                       | `@corbits/mcp`                | Send `initialize`; returns `serverInfo` and `protocolVersion`.                                                    |
+| `mcpInitialize(url, opts?)`                       | `@corbits/mcp`                | Send `initialize` and `notifications/initialized`; returns the `McpSession` to pass to later calls.               |
 | `mcpListTools(url, opts?)`                        | `@corbits/mcp`                | Send `tools/list`; returns `McpTool[]`.                                                                           |
 | `mcpCallTool(url, name, args, opts?)`             | `@corbits/mcp`                | Send `tools/call`; returns `McpToolResult`.                                                                       |
 | `mcpTools(options, env?)`                         | `@corbits/mcp`                | Discover each server live, then build tools. For hosts that can await; servers use `name` and `credentialHandle`. |
@@ -174,6 +174,7 @@ Grant the agent's principal `tool:deepwiki.*` for the whole server, or `tool:dee
 - `@intx/db`, `@intx/hub-api`, `drizzle-orm`, `hono` and `@corbits/credential-http` are optional peers. Install them if you use `@corbits/mcp/hub`. `@corbits/credential-http` replaces `@corbits/credential-mcp`.
 - Discovery with a credential pins to the credential's provider `apiBaseUrl` origin, not to the requested URL's origin. A credential with a secret whose provider has no `apiBaseUrl` is refused, and a URL on another origin needs `extraOrigins`. No origin is allowed by default.
 - `readCredentialSecret` is now `readCredential`, which returns `{ secret, origin? }`. `discoverMcpServer` takes `credential: { secret, origin? }` instead of `secret`.
+- `mcpInitialize` returns an `McpSession` (`protocolVersion`, `sessionId?`, `serverInfo?`) and sends `notifications/initialized`. Pass it as `{ session }` to `mcpListTools` and `mcpCallTool`; a stateful server needs it.
 - `@intx/agent` and `@intx/harness` peers are `^0.4.0`.
 - Discovery rejects authorization-server metadata whose `issuer` differs from the one the protected resource names.
 

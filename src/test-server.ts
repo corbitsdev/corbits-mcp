@@ -34,7 +34,11 @@ export function startTestMcpServer(
       ) {
         return new Response("unauthorized", { status: 401 });
       }
-      const parsedBody = JsonRpcRequestBody(await req.json());
+      const raw: unknown = await req.json();
+      if (typeof raw === "object" && raw !== null && !("id" in raw)) {
+        return new Response(null, { status: 202 });
+      }
+      const parsedBody = JsonRpcRequestBody(raw);
       if (parsedBody instanceof type.errors) {
         return new Response("bad request", { status: 400 });
       }

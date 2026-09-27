@@ -16,6 +16,7 @@ export {
   type McpTool,
   type McpToolResult,
   type McpClientOptions,
+  type McpSession,
 } from "./client.js";
 
 export {

@@ -22,6 +22,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   mcpCallTool,
   mcpInitialize,
+  type McpClientOptions,
   McpToolSchema,
   type McpTool,
 } from "./client.js";
@@ -136,7 +137,7 @@ function requestPath(url: string): string {
 interface ServerRuntime {
   readonly server: McpBoundServer;
   handle: Promise<HttpCredential> | undefined;
-  ready: Promise<MediatedFetch> | undefined;
+  ready: Promise<McpClientOptions> | undefined;
 }
 
 /**
@@ -188,7 +189,7 @@ export function mcpServers(
 
       /** Resolve-and-initialize once per server, retried after a failure so a
        * transient one does not disable that server for the whole run. */
-      function connect(runtime: ServerRuntime): Promise<MediatedFetch> {
+      function connect(runtime: ServerRuntime): Promise<McpClientOptions> {
         runtime.ready ??= (async () => {
           runtime.handle ??= env.capabilities
             .resolve("credentials")
@@ -201,11 +202,11 @@ export function mcpServers(
           }
           const mediated: MediatedFetch = (input, init) =>
             credential.fetch(input, init);
-          await mcpInitialize(requestPath(runtime.server.url), {
+          const session = await mcpInitialize(requestPath(runtime.server.url), {
             fetch: mediated,
             timeoutMs,
           });
-          return mediated;
+          return { fetch: mediated, session };
         })().catch((cause: unknown) => {
           runtime.ready = undefined;
           runtime.handle = undefined;
@@ -228,13 +229,17 @@ export function mcpServers(
             };
           }
           try {
-            const mediated = await connect(runtime);
+            const client = await connect(runtime);
             const result = await mcpCallTool(
               requestPath(found.server.url),
               found.tool.name,
               call.arguments,
-              { fetch: mediated, timeoutMs, signal },
-            );
+              { ...client, timeoutMs, signal },
+            ).catch((cause: unknown) => {
+              // The session may have expired; the next call opens a new one.
+              runtime.ready = undefined;
+              throw cause;
+            });
             return {
               callId: call.id,
               isError: result.isError === true,
