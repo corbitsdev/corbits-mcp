@@ -17,6 +17,7 @@ import { and, eq } from "drizzle-orm";
 import type { Hono, MiddlewareHandler } from "hono";
 
 import {
+  McpError,
   mcpInitialize,
   mcpListTools,
   type McpTool,
@@ -54,7 +55,8 @@ export type McpCredential = {
 /**
  * Read a tenant credential's decrypted secret and the origin it is pinned to.
  * Scoped by tenant so a credential id from another tenant reads as absent,
- * not as a secret.
+ * not as a secret; a revoked, errored or expired credential reads as absent
+ * too.
  */
 export async function readCredential(opts: {
   readonly db: DB["db"];
@@ -66,6 +68,8 @@ export async function readCredential(opts: {
     .select({
       id: credential.id,
       secret: credential.secret,
+      status: credential.status,
+      expiresAt: credential.expiresAt,
       apiBaseUrl: provider.apiBaseUrl,
     })
     .from(credential)
@@ -77,7 +81,13 @@ export async function readCredential(opts: {
       ),
     )
     .limit(1);
-  if (row === undefined) return undefined;
+  if (
+    row === undefined ||
+    row.status !== "active" ||
+    (row.expiresAt !== null && row.expiresAt.getTime() <= Date.now())
+  ) {
+    return undefined;
+  }
   const secret = await opts.cipher.decrypt(
     row.secret,
     credentialAad(row.id, "secret"),
@@ -87,13 +97,15 @@ export async function readCredential(opts: {
     : { secret, origin: new URL(row.apiBaseUrl).origin };
 }
 
+const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
+
 /** A 3xx would send the bearer onward, so the pinned fetch's manual redirect
  * is turned into a refusal rather than a response the client tries to read. */
 function refusingRedirects(inner: FetchLike): FetchLike {
   return async (input, init) => {
     const response = await inner(input, init);
     if (response.status >= 300 && response.status < 400) {
-      throw new Error(
+      throw new McpError(
         `the MCP server answered a ${String(response.status)} redirect; refusing to follow it`,
       );
     }
@@ -128,11 +140,22 @@ export async function discoverMcpServer(args: {
       : secret;
   const origin = token === undefined ? target.origin : args.credential?.origin;
   if (origin === undefined) {
-    throw new Error("the credential's provider has no API origin to pin to");
+    throw new McpError("the credential's provider has no API origin to pin to");
+  }
+  // A secret that is not a valid header value makes fetch throw a message
+  // quoting it, so it is refused here with a fixed one.
+  if (token !== undefined && !HEADER_VALUE.test(token)) {
+    throw new McpError("the credential's secret is not a valid header value");
   }
   const extraOrigins = Object.entries(args.extraOrigins ?? {}).flatMap(
     ([pinned, extra]) => (new URL(pinned).origin === origin ? extra : []),
   );
+  const allowed = [origin, ...extraOrigins.map((o) => new URL(o).origin)];
+  if (!allowed.includes(target.origin)) {
+    throw new McpError(
+      `credential is pinned to ${origin}; refusing cross-origin request to ${target.origin}`,
+    );
+  }
   const pinned = refusingRedirects(
     createOriginPinnedFetch({
       origin,
@@ -197,11 +220,16 @@ export function mountMcpDiscovery(
       });
       return c.json({ data });
     } catch (cause) {
-      opts.onError?.(cause, { url: body.url });
-      // The message describes the handshake, never the material it used.
+      // Only this package's own messages are passed on: anything else, such
+      // as a fetch error, may quote the material the request carried.
+      const error =
+        cause instanceof McpError
+          ? cause
+          : new McpError("the handshake failed");
+      opts.onError?.(error, { url: body.url });
       return c.json(
         {
-          error: `the MCP server at ${target.origin} could not be discovered: ${cause instanceof Error ? cause.message : String(cause)}`,
+          error: `the MCP server at ${target.origin} could not be discovered: ${error.message}`,
         },
         422,
       );

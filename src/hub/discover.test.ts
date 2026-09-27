@@ -26,6 +26,9 @@ function appWith(
   opts: {
     readonly apiBaseUrl?: string | null;
     readonly extraOrigins?: Record<string, string[]>;
+    readonly status?: string;
+    readonly expiresAt?: Date | null;
+    readonly onError?: (error: unknown) => void;
   } = {},
 ): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -38,7 +41,15 @@ function appWith(
   const row = (id: string) =>
     secrets[id] === undefined
       ? []
-      : [{ id, secret: secrets[id], apiBaseUrl: opts.apiBaseUrl ?? null }];
+      : [
+          {
+            id,
+            secret: secrets[id],
+            status: opts.status ?? "active",
+            expiresAt: opts.expiresAt ?? null,
+            apiBaseUrl: opts.apiBaseUrl ?? null,
+          },
+        ];
   const db = {
     select: () => ({
       from: () => ({
@@ -62,6 +73,7 @@ function appWith(
       await next();
     },
     extraOrigins: opts.extraOrigins,
+    onError: opts.onError,
   } as unknown as MountMcpDiscoveryOpts;
   mountMcpDiscovery(app, mountOpts);
   return app;
@@ -272,5 +284,57 @@ describe("POST /mcp/discover", () => {
     } finally {
       await stalled.stop(true);
     }
+  });
+
+  test.each([
+    ["CRLF", "sk-live-SECRET\r\nX-Injected: 1"],
+    ["LF", "sk-live-SECRET\n"],
+    ["NUL", "sk-live-SECRET\0"],
+  ])(
+    "a secret with %s is refused before any request and never echoed",
+    async (_, secret) => {
+      handle = startTestMcpServer();
+      const errors: unknown[] = [];
+      const { status, json } = await post(
+        appWith(
+          { cred_1: secret },
+          {
+            apiBaseUrl: handle.url,
+            onError: (error) => errors.push(error),
+          },
+        ),
+        { url: handle.url, credentialId: "cred_1" },
+      );
+      expect(status).toBe(422);
+      expect(String(json["error"])).toContain("not a valid header value");
+      expect(JSON.stringify(json)).not.toContain("sk-live");
+      expect(String(errors[0])).not.toContain("sk-live");
+      expect(handle.requestsSeen).toHaveLength(0);
+    },
+  );
+
+  test("a fetch failure is reported as a generic handshake error", async () => {
+    const errors: unknown[] = [];
+    const { status, json } = await post(
+      appWith({}, { onError: (error) => errors.push(error) }),
+      { url: "http://127.0.0.1:1/mcp" },
+    );
+    expect(status).toBe(422);
+    expect(String(json["error"])).toEndWith("the handshake failed");
+    expect(String(errors[0])).toContain("the handshake failed");
+  });
+
+  test.each([
+    ["revoked", { status: "revoked" }],
+    ["errored", { status: "error" }],
+    ["expired", { expiresAt: new Date(Date.now() - 1_000) }],
+  ])("a credential that is %s reads as absent", async (_, row) => {
+    handle = startTestMcpServer({ requireAuth: "Bearer tok-1" });
+    const { status } = await post(
+      appWith({ cred_1: "tok-1" }, { apiBaseUrl: handle.url, ...row }),
+      { url: handle.url, credentialId: "cred_1" },
+    );
+    expect(status).toBe(404);
+    expect(handle.requestsSeen).toHaveLength(0);
   });
 });
