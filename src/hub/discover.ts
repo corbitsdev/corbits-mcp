@@ -42,6 +42,11 @@ export type MountMcpDiscoveryOpts = {
    * origin. Passed through to `@corbits/credential-http`. Empty by default.
    */
   readonly extraOrigins?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Allow plain-http loopback targets, for local development only. Off by
+   * default so the route cannot be pointed at the hub's own ports.
+   */
+  readonly allowLoopback?: boolean;
   /** Reported when a discovery attempt fails; the caller only sees a message. */
   readonly onError?: (error: unknown, context: { url: string }) => void;
 };
@@ -205,6 +210,9 @@ export function mountMcpDiscovery(
         400,
       );
     }
+    if (target.protocol === "http:" && opts.allowLoopback !== true) {
+      return c.json({ error: "the MCP server URL must be https" }, 400);
+    }
 
     try {
       const found =
@@ -229,11 +237,16 @@ export function mountMcpDiscovery(
       return c.json({ data });
     } catch (cause) {
       // Only this package's own messages are passed on: anything else, such
-      // as a fetch error, may quote the material the request carried.
+      // as a fetch error, may quote the material the request carried. An
+      // upstream status is not echoed, so the route is no port-probing oracle.
       const error =
-        cause instanceof McpError
+        cause instanceof McpError && cause.status === undefined
           ? cause
-          : new McpError("the handshake failed");
+          : new McpError(
+              cause instanceof McpError
+                ? "the server refused the request"
+                : "the handshake failed",
+            );
       opts.onError?.(error, { url: body.url });
       return c.json(
         {

@@ -352,3 +352,29 @@ describe("initialize hardening", () => {
     expect((failure as Error).message).toContain("within 50ms");
   });
 });
+
+describe("tools/list", () => {
+  test("a catalog with duplicate tool names is refused", async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const parsed = RequestIdOnly(await req.json());
+        if (parsed instanceof type.errors)
+          return new Response("", { status: 400 });
+        const tool = { name: "dup", inputSchema: {} };
+        return Response.json({
+          jsonrpc: "2.0",
+          id: parsed.id,
+          result: { tools: [tool, tool] },
+        });
+      },
+    });
+    try {
+      await expect(mcpListTools(server.url.toString())).rejects.toThrow(
+        /duplicate tool names/,
+      );
+    } finally {
+      void server.stop(true);
+    }
+  });
+});

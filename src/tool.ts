@@ -20,7 +20,13 @@ import {
   type McpClientOptions,
   type McpTool,
 } from "./client.js";
-import { isAskExempt, qualifiedName, toolDescription } from "./naming.js";
+import {
+  assertCatalogNames,
+  assertServers,
+  isAskExempt,
+  qualifiedName,
+  toolDescription,
+} from "./naming.js";
 
 export interface McpServerConfig {
   /** Namespace prefix for this server's tools: `<name>.<remote-tool-name>`. */
@@ -87,6 +93,7 @@ export async function mcpTools(
 ): Promise<AnnotatedToolFactory<McpToolsEnv>> {
   const allowWithoutAsk = options.allowWithoutAsk ?? [];
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  assertServers(options.servers, "MCP server name");
   const discovered: DiscoveredTool[] = [];
 
   for (const server of options.servers) {
@@ -97,6 +104,7 @@ export async function mcpTools(
     };
     const session = await mcpInitialize(server.url, clientOpts);
     const tools = await mcpListTools(server.url, { ...clientOpts, session });
+    assertCatalogNames(server.name, tools);
     for (const tool of tools) {
       discovered.push({
         server,

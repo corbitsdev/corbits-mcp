@@ -98,6 +98,30 @@ describe("mcpTools discovers a live server and floors every tool at ask", () => 
   });
 });
 
+describe("mcpTools refuses a bad server list before any request", () => {
+  test("empty, duplicate and non-https entries are refused", async () => {
+    handle = startTestMcpServer();
+    const url = handle.url;
+    await expect(mcpTools({ servers: [{ name: "", url }] })).rejects.toThrow(
+      "empty MCP server name",
+    );
+    await expect(
+      mcpTools({
+        servers: [
+          { name: "srv", url },
+          { name: "srv", url },
+        ],
+      }),
+    ).rejects.toThrow('duplicate MCP server name "srv"');
+    await expect(
+      mcpTools({
+        servers: [{ name: "srv", url: "http://mcp.example.test/mcp" }],
+      }),
+    ).rejects.toThrow("must be https");
+    expect(handle.requestsSeen).toHaveLength(0);
+  });
+});
+
 describe("mcpTools bounds a stalling server", () => {
   const env = {
     sources: [],
