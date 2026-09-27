@@ -38,7 +38,7 @@ for (const tool of await mcpListTools(url)) {
 }
 ```
 
-Every client call takes `{ fetch }` as its last argument, for example a fetch that adds an `Authorization` header.
+Every client call takes `{ fetch, timeoutMs, signal }` as its last argument, for example a fetch that adds an `Authorization` header. `timeoutMs` covers the request and reading its body, and `signal` cancels both. `mcpTools` and `mcpServers` take a `timeoutMs` option, 60 seconds by default, and pass each tool call's abort signal through, so a stalling server fails that call instead of hanging it. A response body or event-stream frame over 4 MiB is refused and the stream cancelled.
 
 ## Where it fits
 
@@ -114,7 +114,7 @@ Mount `mcpRoutes` on the hub app under `/api/tenants/:tenantId`, behind the hub'
 
 `POST /api/tenants/:tenantId/mcp/discover` with `{ url, credentialId? }` returns `{ data: { serverInfo, tools } }`. `url` must be https (http only on loopback). `credentialId` names a tenant credential whose secret is sent as a bearer; a credential holding `MCP_NO_TOKEN_SENTINEL` from `@corbits/credential-http` sends no `authorization` header. Errors: 400 for a bad body or URL, 404 for an unknown credential, 422 when the server fails discovery or the request would leave the credential's origin. `requireGrant` is the host's own grant middleware for this route.
 
-When a secret is sent, the fetch is pinned to the origin of the credential's provider `apiBaseUrl`; with no credential or a keyless one, to the URL's origin. Redirects are always refused, so the secret never leaves that origin.
+When a secret is sent, the fetch is pinned to the origin of the credential's provider `apiBaseUrl`; with no credential or a keyless one, to the URL's origin. Redirects are always refused, so the secret never leaves that origin. Each discovery request times out after 30 seconds.
 
 #### Extra origins
 
