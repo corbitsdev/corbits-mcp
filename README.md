@@ -65,6 +65,23 @@ passes through. A handle that will not resolve, or a server that fails
 `mcpTools` (the root export) is the author-time equivalent, for code that can
 await discovery itself.
 
+## Why not `@modelcontextprotocol/sdk`
+
+The client in `src/client.ts` is hand-rolled on purpose. It only ever sends
+`initialize`, `tools/list` and `tools/call`, each as one request awaiting one
+reply; in the sidecar bundle that request goes through a fetch the mediated
+credential handle pins to the server's origin. That needs only JSON-RPC
+framing and reading the matching `data:` frame from an event-stream reply.
+
+The SDK's streamable-HTTP client transport is built for long-lived sessions
+(resumable streams, server-initiated requests) and installs `zod`, `ajv`,
+`express` and more alongside it, none of which this package would use.
+
+The cost: the client never sends `Mcp-Session-Id`, so a server that issues
+one on `initialize` and requires it afterwards rejects `tools/list` and
+`tools/call`. Revisit if that, notifications, or server-to-client requests
+are needed.
+
 ## Grants
 
 Every call is checked as resource `tool:<name>`, most specific match wins,
