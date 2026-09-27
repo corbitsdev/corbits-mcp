@@ -26,6 +26,10 @@ const asMetadata = {
   code_challenge_methods_supported: ["S256"],
 };
 
+// Served at the resource itself (RFC 8414 fallback), so it names the resource
+// URL as its issuer.
+const fallbackAsMetadata = { ...asMetadata, issuer: resourceUrl };
+
 // Real metadata (checked 2026-09-22) from two live MCP servers, used to keep
 // the negotiation logic honest against shapes actual authorization servers
 // send. No provider-specific behavior lives in src — these are fixtures only.
@@ -131,13 +135,39 @@ describe("MCP OAuth discovery", () => {
     const { fetchImpl } = fakeFetch({
       "https://mcp.example.com/.well-known/oauth-authorization-server/mcp": {
         status: 200,
-        body: asMetadata,
+        body: fallbackAsMetadata,
       },
     });
     const entry = await discoverMcpLoginEntry({ resourceUrl, fetchImpl });
     expect(entry.authorizationServer.tokenEndpoint).toBe(
       "https://auth.example.com/token",
     );
+  });
+
+  test("accepts fallback metadata whose issuer differs only by a trailing slash", async () => {
+    const { fetchImpl } = fakeFetch({
+      "https://mcp.example.com/.well-known/oauth-authorization-server/mcp": {
+        status: 200,
+        body: { ...fallbackAsMetadata, issuer: `${resourceUrl}/` },
+      },
+    });
+    const entry = await discoverMcpLoginEntry({ resourceUrl, fetchImpl });
+    expect(entry.authorizationServer.issuer).toBe(`${resourceUrl}/`);
+  });
+
+  test("rejects fallback metadata naming an issuer other than the resource", async () => {
+    // Load-bearing: RFC 8414 §3.3; metadata served at the resource must be
+    // for the issuer that resource URL identifies, or a resource could hand
+    // out another server's endpoints.
+    const { fetchImpl } = fakeFetch({
+      "https://mcp.example.com/.well-known/oauth-authorization-server/mcp": {
+        status: 200,
+        body: asMetadata,
+      },
+    });
+    await expect(
+      discoverMcpLoginEntry({ resourceUrl, fetchImpl }),
+    ).rejects.toThrow(/issuer mismatch/);
   });
 
   test("rejects protected-resource metadata naming a different resource", async () => {
@@ -192,7 +222,7 @@ describe("MCP OAuth discovery", () => {
     const {
       code_challenge_methods_supported: _unused,
       ...metadataWithoutPkce
-    } = asMetadata;
+    } = fallbackAsMetadata;
     const { fetchImpl } = fakeFetch({
       "https://mcp.example.com/.well-known/oauth-authorization-server/mcp": {
         status: 200,
@@ -210,7 +240,10 @@ describe("MCP OAuth discovery", () => {
     const { fetchImpl } = fakeFetch({
       "https://mcp.example.com/.well-known/oauth-authorization-server/mcp": {
         status: 200,
-        body: { ...asMetadata, code_challenge_methods_supported: ["plain"] },
+        body: {
+          ...fallbackAsMetadata,
+          code_challenge_methods_supported: ["plain"],
+        },
       },
     });
     await expect(
@@ -226,7 +259,7 @@ describe("MCP OAuth discovery", () => {
       "https://mcp.example.com/.well-known/oauth-authorization-server/mcp": {
         status: 200,
         body: {
-          ...asMetadata,
+          ...fallbackAsMetadata,
           token_endpoint_auth_methods_supported: ["client_secret_basic"],
         },
       },

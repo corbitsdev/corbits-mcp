@@ -72,7 +72,7 @@ function envWith(
 }
 
 /** Mediated fetch: resolves a relative path against the pinned origin and
- * injects the bearer, exactly as `@corbits/credential-mcp` shapes it. */
+ * injects the bearer, exactly as `@corbits/credential-http` shapes it. */
 function pinnedFetch(origin: string, bearer?: string) {
   const seen: Headers[] = [];
   const impl: FetchStub = (input, init) => {

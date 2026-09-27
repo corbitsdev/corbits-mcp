@@ -4,7 +4,8 @@
 export {
   mountMcpDiscovery,
   discoverMcpServer,
-  readCredentialSecret,
+  readCredential,
+  type McpCredential,
   type McpDiscovery,
   type MountMcpDiscoveryOpts,
 } from "./discover.js";

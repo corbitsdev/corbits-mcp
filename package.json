@@ -54,12 +54,12 @@
     "check": "bun run typecheck && bun run lint && bun run format:check && bun run test"
   },
   "dependencies": {
-    "@corbits/oauth-core": "^0.1.0",
+    "@corbits/oauth-core": "^0.2.0",
     "@intx/types": "^0.4.0",
     "arktype": "^2.2.3"
   },
   "devDependencies": {
-    "@corbits/credential-mcp": "^0.1.0",
+    "@corbits/credential-http": "0.1.0",
     "@intx/agent": "0.4.0",
     "@intx/authz": "0.4.0",
     "@intx/db": "0.4.0",
@@ -73,7 +73,7 @@
     "typescript": "5.9.3"
   },
   "peerDependencies": {
-    "@corbits/credential-mcp": "^0.1.0",
+    "@corbits/credential-http": "^0.1.0",
     "@intx/agent": "^0.4.0",
     "@intx/db": "^0.4.0",
     "@intx/harness": "^0.4.0",
@@ -82,7 +82,7 @@
     "hono": "^4.11.9"
   },
   "peerDependenciesMeta": {
-    "@corbits/credential-mcp": {
+    "@corbits/credential-http": {
       "optional": true
     },
     "@intx/db": {
