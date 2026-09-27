@@ -5,6 +5,7 @@
 
 import type { DB } from "@intx/db";
 import { credential } from "@intx/db/schema";
+import type { FetchLike } from "@intx/harness";
 import type { TenantEnv } from "@intx/hub-api";
 import { credentialAad, type CredentialCipher } from "@intx/types";
 import {
@@ -18,7 +19,6 @@ import type { Hono, MiddlewareHandler } from "hono";
 import {
   mcpInitialize,
   mcpListTools,
-  type FetchLike,
   type McpTool,
   type McpServerInfo,
 } from "../client.js";

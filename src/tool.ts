@@ -9,13 +9,13 @@ import {
   type ToolDeclaration,
 } from "@intx/agent";
 import type { ToolCall, ToolDefinition, ToolResult } from "@intx/types/runtime";
+import type { FetchLike } from "@intx/harness";
 import type { CredentialCapability } from "@intx/types";
 
 import {
   mcpCallTool,
   mcpInitialize,
   mcpListTools,
-  type FetchLike,
   type McpTool,
 } from "./client.js";
 import { isAskExempt, qualifiedName, toolDescription } from "./naming.js";

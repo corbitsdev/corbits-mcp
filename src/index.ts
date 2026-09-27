@@ -16,7 +16,6 @@ export {
   type McpTool,
   type McpToolResult,
   type McpClientOptions,
-  type FetchLike,
 } from "./client.js";
 
 export {

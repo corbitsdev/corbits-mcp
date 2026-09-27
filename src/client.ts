@@ -2,6 +2,7 @@
 // resumption because this client only ever sends one request and awaits
 // its one reply, which is all initialize/tools-list/tools-call need.
 
+import type { FetchLike } from "@intx/harness";
 import { type } from "arktype";
 
 export const McpToolSchema = type({
@@ -21,11 +22,6 @@ export interface McpToolResult {
   content: unknown;
   isError?: boolean;
 }
-
-export type FetchLike = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
 
 export interface McpClientOptions {
   /** Injectable `fetch` for tests and mediated-credential handles. */
