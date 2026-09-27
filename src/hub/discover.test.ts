@@ -20,7 +20,6 @@ afterEach(() => {
 function appWith(secrets: Record<string, string>): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
   app.use("*", async (c, next) => {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     (c as unknown as { set(k: string, v: unknown): void }).set("tenant", {
       id: "tnt_1",
     });
@@ -41,7 +40,6 @@ function appWith(secrets: Record<string, string>): Hono<TenantEnv> {
   };
   const cipher = { decrypt: (value: string) => Promise.resolve(value) };
   // Only the narrow `db.select` chain and `cipher.decrypt` are exercised here.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const opts = {
     db,
     cipher,
@@ -64,7 +62,6 @@ async function post(
   });
   const json: unknown = await response.json().catch(() => ({}));
   // The route always answers JSON; the cast narrows it for assertions.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   return { status: response.status, json: json as Record<string, unknown> };
 }
 
@@ -73,7 +70,6 @@ describe("POST /mcp/discover", () => {
     handle = startTestMcpServer();
     const { status, json } = await post(appWith({}), { url: handle.url });
     expect(status).toBe(200);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const data = json["data"] as {
       serverInfo: { serverInfo?: { name: string } };
       tools: { name: string }[];
