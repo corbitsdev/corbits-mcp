@@ -51,9 +51,13 @@ const JsonRpcResponse = type({
 });
 
 export class McpError extends Error {
-  constructor(message: string) {
+  /** The HTTP status, when the server answered with a non-2xx one. */
+  readonly status: number | undefined;
+
+  constructor(message: string, status?: number) {
     super(message);
     this.name = "McpError";
+    this.status = status;
   }
 }
 
@@ -123,6 +127,7 @@ async function sendRequest(
       await response.body?.cancel();
       throw new McpError(
         `MCP server ${url} responded ${response.status} to ${method}`,
+        response.status,
       );
     }
 
@@ -188,6 +193,7 @@ async function sendNotification(
   if (!response.ok) {
     throw new McpError(
       `MCP server ${url} responded ${response.status} to ${method}`,
+      response.status,
     );
   }
 }
@@ -349,6 +355,12 @@ export async function mcpListTools(
   if (parsed instanceof type.errors) {
     throw new McpError(
       `MCP server ${url} sent a malformed tools/list result: ${parsed.summary}`,
+    );
+  }
+  const names = new Set(parsed.tools.map((tool) => tool.name));
+  if (names.size !== parsed.tools.length) {
+    throw new McpError(
+      `MCP server ${url} sent a tools/list result with duplicate tool names`,
     );
   }
   return parsed.tools;

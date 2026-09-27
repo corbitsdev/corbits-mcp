@@ -313,3 +313,40 @@ describe("mcpServers round trip through a mediated handle", () => {
     expect(result.content).toContain("was cancelled");
   });
 });
+
+describe("catalog names", () => {
+  const tool = (name: string): McpTool => ({ name, inputSchema: {} });
+
+  test("a catalog listing a tool twice is refused", () => {
+    expect(() =>
+      mcpServers({
+        servers: [
+          {
+            handle: "srv",
+            url: "https://x.example.test/mcp",
+            tools: [tool("dup"), tool("dup")],
+          },
+        ],
+      }),
+    ).toThrow(/more than once/);
+  });
+
+  test("a handle that would fall under another server's grant is refused", () => {
+    expect(() =>
+      mcpServers({
+        servers: [
+          {
+            handle: "srv",
+            url: "https://x.example.test/mcp",
+            tools: [tool("read")],
+          },
+          {
+            handle: "srv.read",
+            url: "https://y.example.test/mcp",
+            tools: [tool("x")],
+          },
+        ],
+      }),
+    ).toThrow(/must not contain "."/);
+  });
+});

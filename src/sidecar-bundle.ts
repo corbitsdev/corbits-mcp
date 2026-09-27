@@ -26,8 +26,13 @@ import {
   McpToolSchema,
   type McpTool,
 } from "./client.js";
-import { isAskExempt, qualifiedName, toolDescription } from "./naming.js";
-import { parseMcpEndpoint } from "./url.js";
+import {
+  assertCatalogNames,
+  assertServers,
+  isAskExempt,
+  qualifiedName,
+  toolDescription,
+} from "./naming.js";
 
 /** The consumer key a host matches a credential binding against. */
 export const SIDECAR_BUNDLE_ID = "@corbits/mcp/sidecar-bundle";
@@ -94,21 +99,18 @@ function assertConfig(config: McpServersConfig): void {
   if (parsed instanceof type.errors) {
     throw new Error(`invalid @corbits/mcp server config: ${parsed.summary}`);
   }
-  const seen = new Set<string>();
-  for (const server of config.servers) {
-    if (seen.has(server.handle)) {
-      throw new Error(
-        `invalid @corbits/mcp server config: duplicate credential handle "${server.handle}"`,
-      );
+  try {
+    assertServers(
+      config.servers.map(({ handle, url }) => ({ name: handle, url })),
+      "credential handle",
+    );
+    for (const server of config.servers) {
+      assertCatalogNames(server.handle, server.tools);
     }
-    seen.add(server.handle);
-    try {
-      parseMcpEndpoint(server.url);
-    } catch (cause) {
-      throw new Error(
-        `invalid @corbits/mcp server config: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
-    }
+  } catch (cause) {
+    throw new Error(
+      `invalid @corbits/mcp server config: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
   }
 }
 

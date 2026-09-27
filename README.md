@@ -70,7 +70,7 @@ Every client call takes `{ fetch, timeoutMs, signal, session }` as its last argu
 
 ### Grants
 
-Every call is checked as resource `tool:<name>`. The most specific match wins, and `deny` beats `ask` beats `allow`. `tool:<handle>.<tool>` grants one remote tool and `tool:<handle>.*` covers a whole server.
+Every call is checked as resource `tool:<name>`. The most specific match wins, and `deny` beats `ask` beats `allow`. `tool:<handle>.<tool>` grants one remote tool and `tool:<handle>.*` covers a whole server. A handle or server name may not contain `.`, and a catalog may not list a tool name twice, so no tool falls under another server's grant.
 
 List `"<handle>.<tool>"` in `allowWithoutAsk` to let an `allow` grant run that tool without approval. The list is ignored for tools flagged `destructiveHint: true`.
 
@@ -112,7 +112,7 @@ mountMcpDiscovery(mcpRoutes, {
 
 Mount `mcpRoutes` on the hub app under `/api/tenants/:tenantId`, behind the hub's auth and tenant middleware.
 
-`POST /api/tenants/:tenantId/mcp/discover` with `{ url, credentialId? }` returns `{ data: { serverInfo, tools } }`. `url` must be https (http only on loopback). `credentialId` names a tenant credential whose secret is sent as a bearer; a credential holding `MCP_NO_TOKEN_SENTINEL` from `@corbits/credential-http` sends no `authorization` header. Errors: 400 for a bad body or URL, 404 for an unknown credential or one that is not active or has expired, 422 when the server fails discovery, the secret is not a valid header value, or the request would leave the credential's origin. A 422 carries only this package's own messages; any other failure reads as a generic handshake error, so no response or `onError` text quotes the secret. `requireGrant` is the host's own grant middleware for this route.
+`POST /api/tenants/:tenantId/mcp/discover` with `{ url, credentialId? }` returns `{ data: { serverInfo, tools } }`. `url` must be https; plain-http loopback is refused unless the host sets `allowLoopback: true` for local development. `credentialId` names a tenant credential whose secret is sent as a bearer; a credential holding `MCP_NO_TOKEN_SENTINEL` from `@corbits/credential-http` sends no `authorization` header. Errors: 400 for a bad body or URL, 404 for an unknown credential or one that is not active or has expired, 422 when the server fails discovery, the secret is not a valid header value, or the request would leave the credential's origin. A 422 carries only this package's own messages and never the upstream HTTP status; any other failure reads as a generic handshake error, so no response or `onError` text quotes the secret. `requireGrant` is the host's own grant middleware for this route.
 
 When a secret is sent, the fetch is pinned to the origin of the credential's provider `apiBaseUrl`; with no credential or a keyless one, to the URL's origin. Redirects are always refused, so the secret never leaves that origin. Each discovery request times out after 30 seconds.
 
@@ -175,6 +175,7 @@ Grant the agent's principal `tool:deepwiki.*` for the whole server, or `tool:dee
 - Discovery with a credential pins to the credential's provider `apiBaseUrl` origin, not to the requested URL's origin. A credential with a secret whose provider has no `apiBaseUrl` is refused, and a URL on another origin needs `extraOrigins`. No origin is allowed by default.
 - `readCredentialSecret` is now `readCredential`, which returns `{ secret, origin? }`. `discoverMcpServer` takes `credential: { secret, origin? }` instead of `secret`.
 - `mcpInitialize` returns an `McpSession` (`protocolVersion`, `sessionId?`, `serverInfo?`) and sends `notifications/initialized`. Pass it as `{ session }` to `mcpListTools` and `mcpCallTool`; a stateful server needs it.
+- The discovery route refuses plain-http loopback URLs unless `allowLoopback` is set. Handles and server names containing `.`, and catalogs repeating a tool name, are refused. `mcpTools` refuses an empty or repeated server name, and a non-https URL, before any request.
 - `@intx/agent` and `@intx/harness` peers are `^0.4.0`.
 - Discovery rejects authorization-server metadata whose `issuer` differs from the one the protected resource names.
 

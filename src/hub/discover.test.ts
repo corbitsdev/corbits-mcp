@@ -29,6 +29,7 @@ function appWith(
     readonly status?: string;
     readonly expiresAt?: Date | null;
     readonly onError?: (error: unknown) => void;
+    readonly allowLoopback?: boolean;
   } = {},
 ): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -74,6 +75,7 @@ function appWith(
     },
     extraOrigins: opts.extraOrigins,
     onError: opts.onError,
+    allowLoopback: opts.allowLoopback ?? true,
   } as unknown as MountMcpDiscoveryOpts;
   mountMcpDiscovery(app, mountOpts);
   return app;
@@ -336,5 +338,32 @@ describe("POST /mcp/discover", () => {
     );
     expect(status).toBe(404);
     expect(handle.requestsSeen).toHaveLength(0);
+  });
+
+  test("a plain-http loopback target is refused unless the host allows it", async () => {
+    handle = startTestMcpServer();
+    const { status, json } = await post(appWith({}, { allowLoopback: false }), {
+      url: handle.url,
+    });
+    expect(status).toBe(400);
+    expect(String(json["error"])).toContain("https");
+    expect(handle.requestsSeen).toHaveLength(0);
+  });
+
+  test("an upstream status is not echoed", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => new Response("<html>admin</html>", { status: 403 }),
+    });
+    try {
+      const { status, json } = await post(appWith({}), {
+        url: new URL("/admin", server.url).href,
+      });
+      expect(status).toBe(422);
+      expect(String(json["error"])).toEndWith("the server refused the request");
+      expect(String(json["error"])).not.toContain("403");
+    } finally {
+      await server.stop(true);
+    }
   });
 });
