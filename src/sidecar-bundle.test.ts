@@ -279,4 +279,37 @@ describe("mcpServers round trip through a mediated handle", () => {
     await bundle.dispose?.();
     expect(disposed).toBe(1);
   });
+
+  test("a stalling tools/call times out as that tool's error", async () => {
+    handle = startTestMcpServer({ stallToolsCall: true });
+    const { impl } = pinnedFetch(new URL(handle.url).origin);
+    const { env } = envWith({ srv: { fetch: impl } });
+    const bundle = mcpServers({
+      servers: [{ handle: "srv", url: handle.url, tools: CATALOG }],
+      timeoutMs: 100,
+    })(env);
+    const result = await bundle.run(
+      { id: "1", name: "srv.echo", arguments: { text: "hi" } },
+      new AbortController().signal,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("within 100ms");
+  });
+
+  test("aborting the tool call cancels a stalling tools/call", async () => {
+    handle = startTestMcpServer({ stallToolsCall: true });
+    const { impl } = pinnedFetch(new URL(handle.url).origin);
+    const { env } = envWith({ srv: { fetch: impl } });
+    const bundle = mcpServers({
+      servers: [{ handle: "srv", url: handle.url, tools: CATALOG }],
+    })(env);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    const result = await bundle.run(
+      { id: "1", name: "srv.echo", arguments: { text: "hi" } },
+      controller.signal,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("was cancelled");
+  });
 });

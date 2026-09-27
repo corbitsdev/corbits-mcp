@@ -19,6 +19,7 @@ import type { ToolCall, ToolDefinition, ToolResult } from "@intx/types/runtime";
 import { type } from "arktype";
 
 import {
+  DEFAULT_TIMEOUT_MS,
   mcpCallTool,
   mcpInitialize,
   McpToolSchema,
@@ -69,6 +70,8 @@ export interface McpBoundServer {
 
 export interface McpServersConfig {
   readonly servers: readonly McpBoundServer[];
+  /** Per-request bound on `initialize` and `tools/call`; defaults to 60s. */
+  readonly timeoutMs?: number;
 }
 
 const BoundServerSchema = type({
@@ -78,7 +81,10 @@ const BoundServerSchema = type({
   "allowWithoutAsk?": "string[]",
 });
 
-const ConfigSchema = type({ servers: BoundServerSchema.array() });
+const ConfigSchema = type({
+  servers: BoundServerSchema.array(),
+  "timeoutMs?": "number > 0",
+});
 
 /** Validate at construction: a malformed deploy config is a deploy bug, not a
  * tool error the model should see. */
@@ -142,6 +148,7 @@ export function mcpServers(
   config: McpServersConfig,
 ): AnnotatedToolFactory<McpServersEnv> {
   assertConfig(config);
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const entries = config.servers.flatMap((server) =>
     server.tools.map((tool) => ({
@@ -196,6 +203,7 @@ export function mcpServers(
             credential.fetch(input, init);
           await mcpInitialize(requestPath(runtime.server.url), {
             fetch: mediated,
+            timeoutMs,
           });
           return mediated;
         })().catch((cause: unknown) => {
@@ -208,7 +216,7 @@ export function mcpServers(
 
       return {
         definitions: toolDefinitions,
-        async run(call: ToolCall, _signal: AbortSignal): Promise<ToolResult> {
+        async run(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
           const found = byName.get(call.name);
           const runtime =
             found === undefined ? undefined : runtimes.get(found.server.handle);
@@ -225,7 +233,7 @@ export function mcpServers(
               requestPath(found.server.url),
               found.tool.name,
               call.arguments,
-              { fetch: mediated },
+              { fetch: mediated, timeoutMs, signal },
             );
             return {
               callId: call.id,

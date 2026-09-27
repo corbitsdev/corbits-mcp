@@ -101,6 +101,9 @@ function refusingRedirects(inner: FetchLike): FetchLike {
   };
 }
 
+/** How long one discovery request, including its body, may take. */
+const DISCOVERY_TIMEOUT_MS = 30_000;
+
 export type McpDiscovery = {
   readonly serverInfo: McpServerInfo;
   readonly tools: readonly McpTool[];
@@ -115,6 +118,7 @@ export async function discoverMcpServer(args: {
   readonly credential?: McpCredential;
   readonly extraOrigins?: Readonly<Record<string, readonly string[]>>;
   readonly fetch?: FetchLike;
+  readonly timeoutMs?: number;
 }): Promise<McpDiscovery> {
   const target = parseMcpEndpoint(args.url);
   const secret = args.credential?.secret;
@@ -138,8 +142,12 @@ export async function discoverMcpServer(args: {
       fetch: args.fetch ?? globalThis.fetch,
     }),
   );
-  const serverInfo = await mcpInitialize(args.url, { fetch: pinned });
-  const tools = await mcpListTools(args.url, { fetch: pinned });
+  const client = {
+    fetch: pinned,
+    timeoutMs: args.timeoutMs ?? DISCOVERY_TIMEOUT_MS,
+  };
+  const serverInfo = await mcpInitialize(args.url, client);
+  const tools = await mcpListTools(args.url, client);
   return { serverInfo, tools };
 }
 

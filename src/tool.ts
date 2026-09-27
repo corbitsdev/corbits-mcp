@@ -13,6 +13,7 @@ import type { FetchLike } from "@intx/harness";
 import type { CredentialCapability } from "@intx/types";
 
 import {
+  DEFAULT_TIMEOUT_MS,
   mcpCallTool,
   mcpInitialize,
   mcpListTools,
@@ -47,6 +48,8 @@ export interface McpToolsOptions {
    * that flag wins no matter what the operator lists here.
    */
   allowWithoutAsk?: string[];
+  /** Per-request bound on every MCP round trip; defaults to 60s. */
+  timeoutMs?: number;
 }
 
 async function resolveFetch(
@@ -82,11 +85,15 @@ export async function mcpTools(
   discoveryEnv: { credentials?: CredentialCapability } = {},
 ): Promise<AnnotatedToolFactory<McpToolsEnv>> {
   const allowWithoutAsk = options.allowWithoutAsk ?? [];
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const discovered: DiscoveredTool[] = [];
 
   for (const server of options.servers) {
     const clientFetch = await resolveFetch(server, discoveryEnv.credentials);
-    const clientOpts = clientFetch !== undefined ? { fetch: clientFetch } : {};
+    const clientOpts = {
+      ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
+      timeoutMs,
+    };
     await mcpInitialize(server.url, clientOpts);
     const tools = await mcpListTools(server.url, clientOpts);
     for (const tool of tools) {
@@ -129,7 +136,7 @@ export async function mcpTools(
 
       return {
         definitions: toolDefinitions,
-        async run(call: ToolCall, _signal: AbortSignal): Promise<ToolResult> {
+        async run(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
           const found = byName.get(call.name);
           if (found === undefined) {
             return {
@@ -144,7 +151,11 @@ export async function mcpTools(
               found.server.url,
               found.tool.name,
               call.arguments,
-              clientFetch !== undefined ? { fetch: clientFetch } : {},
+              {
+                ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
+                timeoutMs,
+                signal,
+              },
             );
             return {
               callId: call.id,

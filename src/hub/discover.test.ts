@@ -3,7 +3,11 @@ import { MCP_NO_TOKEN_SENTINEL } from "@corbits/credential-http";
 import type { TenantEnv } from "@intx/hub-api";
 import { Hono } from "hono";
 
-import { mountMcpDiscovery, type MountMcpDiscoveryOpts } from "./discover.js";
+import {
+  discoverMcpServer,
+  mountMcpDiscovery,
+  type MountMcpDiscoveryOpts,
+} from "./discover.js";
 import { startTestMcpServer, type TestServerHandle } from "../test-server.js";
 
 let handle: TestServerHandle | undefined;
@@ -247,6 +251,26 @@ describe("POST /mcp/discover", () => {
       expect(handle.requestsSeen).toHaveLength(0);
     } finally {
       await redirector.stop(true);
+    }
+  });
+
+  test("discovery gives up on a server that never answers", async () => {
+    const stalled = Bun.serve({
+      port: 0,
+      fetch: async () => {
+        await Bun.sleep(5_000);
+        return new Response("{}");
+      },
+    });
+    try {
+      await expect(
+        discoverMcpServer({
+          url: new URL("/mcp", stalled.url).href,
+          timeoutMs: 200,
+        }),
+      ).rejects.toThrow(/within 200ms/);
+    } finally {
+      await stalled.stop(true);
     }
   });
 });

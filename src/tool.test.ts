@@ -98,6 +98,49 @@ describe("mcpTools discovers a live server and floors every tool at ask", () => 
   });
 });
 
+describe("mcpTools bounds a stalling server", () => {
+  const env = {
+    sources: [],
+    defaultSource: "x",
+    storage: {},
+    workdir: "/tmp",
+    audit: {},
+    authorize: () => Promise.resolve({ effect: "allow", matchingGrants: [] }),
+    directors: {},
+  };
+
+  test("a stalling tools/call times out as a tool error", async () => {
+    handle = startTestMcpServer({ stallToolsCall: true });
+    const factory = await mcpTools({
+      servers: [{ name: "srv", url: handle.url }],
+      timeoutMs: 100,
+    });
+    const bundle = factory(env as unknown as Parameters<typeof factory>[0]);
+    const result = await bundle.run(
+      { id: "1", name: "srv.echo", arguments: { text: "hi" } },
+      new AbortController().signal,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("within 100ms");
+  });
+
+  test("aborting the tool call cancels a stalling tools/call", async () => {
+    handle = startTestMcpServer({ stallToolsCall: true });
+    const factory = await mcpTools({
+      servers: [{ name: "srv", url: handle.url }],
+    });
+    const bundle = factory(env as unknown as Parameters<typeof factory>[0]);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    const result = await bundle.run(
+      { id: "1", name: "srv.echo", arguments: { text: "hi" } },
+      controller.signal,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("was cancelled");
+  });
+});
+
 describe("env.credentials wiring: mcpTools resolves a server's fetch through the standard capability", () => {
   test("a bound credential's fetch is used for tools/call", async () => {
     handle = startTestMcpServer({ requireAuth: "Bearer secret" });

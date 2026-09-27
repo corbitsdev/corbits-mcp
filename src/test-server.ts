@@ -21,7 +21,7 @@ const ToolCallParams = type({
 });
 
 export function startTestMcpServer(
-  opts: { requireAuth?: string } = {},
+  opts: { requireAuth?: string; stallToolsCall?: boolean } = {},
 ): TestServerHandle {
   const requestsSeen: Request[] = [];
   const server = Bun.serve({
@@ -77,6 +77,8 @@ export function startTestMcpServer(
         });
       }
       if (body.method === "tools/call") {
+        if (opts.stallToolsCall === true)
+          return new Promise<Response>(() => {});
         const params = ToolCallParams(body.params);
         if (params instanceof type.errors) {
           return new Response("bad request", { status: 400 });
