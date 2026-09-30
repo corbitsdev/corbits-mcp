@@ -27,6 +27,7 @@ function appWith(
     readonly apiBaseUrl?: string | null;
     readonly extraOrigins?: Record<string, string[]>;
     readonly status?: string;
+    readonly type?: string;
     readonly expiresAt?: Date | null;
     readonly onError?: (error: unknown) => void;
     readonly allowLoopback?: boolean;
@@ -46,6 +47,7 @@ function appWith(
           {
             id,
             secret: secrets[id],
+            type: opts.type ?? "api_key",
             status: opts.status ?? "active",
             expiresAt: opts.expiresAt ?? null,
             apiBaseUrl: opts.apiBaseUrl ?? null,
@@ -129,6 +131,39 @@ describe("POST /mcp/discover", () => {
         (r) => r.headers.get("authorization") === "Bearer tok-1",
       ),
     ).toBe(true);
+  });
+
+  test("an oauth_token credential's access token is sent as a bearer", async () => {
+    handle = startTestMcpServer({ requireAuth: "Bearer access-1" });
+    const { status } = await post(
+      appWith(
+        { cred_1: "access-1" },
+        { apiBaseUrl: handle.url, type: "oauth_token" },
+      ),
+      { url: handle.url, credentialId: "cred_1" },
+    );
+    expect(status).toBe(200);
+    expect(
+      handle.requestsSeen.every(
+        (r) => r.headers.get("authorization") === "Bearer access-1",
+      ),
+    ).toBe(true);
+  });
+
+  test("a lapsed or non-bearer credential is not found", async () => {
+    handle = startTestMcpServer();
+    for (const opts of [
+      { type: "oauth_token", expiresAt: new Date(Date.now() - 1000) },
+      { type: "oauth_token", status: "error" },
+      { type: "certificate" },
+    ]) {
+      const { status } = await post(
+        appWith({ cred_1: "tok" }, { apiBaseUrl: handle.url, ...opts }),
+        { url: handle.url, credentialId: "cred_1" },
+      );
+      expect(status).toBe(404);
+    }
+    expect(handle.requestsSeen).toHaveLength(0);
   });
 
   test("the keyless sentinel sends no authorization header", async () => {
