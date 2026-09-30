@@ -1,6 +1,6 @@
 {
   "name": "@corbits/mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP client tool package for Interchange: streamable HTTP, per-tool grants, OAuth.",
   "keywords": [
     "corbits",
@@ -55,7 +55,7 @@
     "check": "bun run typecheck && bun run lint && bun run format:check && bun run test"
   },
   "dependencies": {
-    "@corbits/oauth-core": "^0.2.0",
+    "@corbits/oauth-core": "^0.3.0",
     "@intx/types": "^0.4.0",
     "arktype": "^2.2.3"
   },
