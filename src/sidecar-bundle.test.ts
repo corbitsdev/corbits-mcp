@@ -89,15 +89,15 @@ describe("mcpServers", () => {
     const factory = mcpServers({
       servers: [
         {
-          handle: "linear",
+          handle: "tracker",
           url: "https://mcp.example.test/mcp",
           tools: CATALOG,
         },
       ],
     });
     expect(factory.definitions.map((d) => d.name).sort()).toEqual([
-      "linear.delete_thing",
-      "linear.echo",
+      "tracker.delete_thing",
+      "tracker.echo",
     ]);
     for (const decl of factory.definitions) {
       expect(toolApprovalEffect(decl)).toBe("ask");
@@ -108,16 +108,16 @@ describe("mcpServers", () => {
     const factory = mcpServers({
       servers: [
         {
-          handle: "linear",
+          handle: "tracker",
           url: "https://mcp.example.test/mcp",
           tools: CATALOG,
-          allowWithoutAsk: ["linear.echo", "linear.delete_thing"],
+          allowWithoutAsk: ["tracker.echo", "tracker.delete_thing"],
         },
       ],
     });
     const byName = new Map(factory.definitions.map((d) => [d.name, d]));
-    const echo = byName.get("linear.echo");
-    const remove = byName.get("linear.delete_thing");
+    const echo = byName.get("tracker.echo");
+    const remove = byName.get("tracker.delete_thing");
     if (echo === undefined || remove === undefined)
       throw new Error("unreachable");
     expect(toolApprovalEffect(echo)).toBe("allow");
@@ -168,26 +168,26 @@ describe("mcpServers round trip through a mediated handle", () => {
     handle = startTestMcpServer({ requireAuth: "Bearer secret" });
     const origin = new URL(handle.url).origin;
     const { seen, impl } = pinnedFetch(origin, "secret");
-    const { env, resolves } = envWith({ linear: { fetch: impl } });
+    const { env, resolves } = envWith({ tracker: { fetch: impl } });
 
     const bundle = mcpServers({
-      servers: [{ handle: "linear", url: handle.url, tools: CATALOG }],
+      servers: [{ handle: "tracker", url: handle.url, tools: CATALOG }],
     })(env);
 
     const first = await bundle.run(
-      { id: "1", name: "linear.echo", arguments: { text: "hi" } },
+      { id: "1", name: "tracker.echo", arguments: { text: "hi" } },
       new AbortController().signal,
     );
     expect(first.isError).toBeFalsy();
     expect(first.content).toBe("hi");
 
     const second = await bundle.run(
-      { id: "2", name: "linear.echo", arguments: { text: "again" } },
+      { id: "2", name: "tracker.echo", arguments: { text: "again" } },
       new AbortController().signal,
     );
     expect(second.content).toBe("again");
     // One resolve and one initialize for the whole run.
-    expect(resolves).toEqual(["linear"]);
+    expect(resolves).toEqual(["tracker"]);
     expect(seen.every((h) => h.get("authorization") === "Bearer secret")).toBe(
       true,
     );
