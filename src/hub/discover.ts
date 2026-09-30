@@ -58,10 +58,17 @@ export type McpCredential = {
 };
 
 /**
+ * Credential types whose secret is a bearer token. An `oauth_token` row's
+ * secret is the current access token, which `@corbits/oauth-core`'s refresher
+ * rewrites in place, so it is read here like any other and never refreshed.
+ */
+const BEARER_CREDENTIAL_TYPES: readonly string[] = ["api_key", "oauth_token"];
+
+/**
  * Read a tenant credential's decrypted secret and the origin it is pinned to.
  * Scoped by tenant so a credential id from another tenant reads as absent,
- * not as a secret; a revoked, errored or expired credential reads as absent
- * too.
+ * not as a secret; a revoked, errored or expired credential, or one that holds no bearer
+ * token (a certificate, say), reads as absent too.
  */
 export async function readCredential(opts: {
   readonly db: DB["db"];
@@ -73,6 +80,7 @@ export async function readCredential(opts: {
     .select({
       id: credential.id,
       secret: credential.secret,
+      type: credential.type,
       status: credential.status,
       expiresAt: credential.expiresAt,
       apiBaseUrl: provider.apiBaseUrl,
@@ -88,6 +96,7 @@ export async function readCredential(opts: {
     .limit(1);
   if (
     row === undefined ||
+    !BEARER_CREDENTIAL_TYPES.includes(row.type) ||
     row.status !== "active" ||
     (row.expiresAt !== null && row.expiresAt.getTime() <= Date.now())
   ) {
