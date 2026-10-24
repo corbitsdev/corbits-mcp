@@ -15,10 +15,11 @@ import type { CredentialCapability } from "@intx/types";
 import {
   DEFAULT_TIMEOUT_MS,
   mcpCallTool,
-  mcpInitialize,
+  mcpConnect,
   mcpListTools,
   type McpClientOptions,
   type McpTool,
+  type McpToolCallResult,
 } from "./client.js";
 import {
   assertCatalogNames,
@@ -57,6 +58,44 @@ export interface McpToolsOptions {
   allowWithoutAsk?: string[];
   /** Per-request bound on every MCP round trip; defaults to 60s. */
   timeoutMs?: number;
+  /**
+   * Extension ids advertised on every request. Off unless listed. Tools stay
+   * the only grantable unit; extensions are not projected into tools.
+   */
+  extensions?: readonly string[];
+}
+
+function toolResult(
+  callId: string,
+  result: McpToolCallResult,
+): { callId: string; isError: boolean; content: string } {
+  if (result.resultType === "input_required") {
+    return {
+      callId,
+      isError: true,
+      content: JSON.stringify({
+        resultType: result.resultType,
+        method: result.method,
+        ...(result.inputRequests !== undefined
+          ? { inputRequests: result.inputRequests }
+          : {}),
+        ...(result.requestState !== undefined
+          ? { requestState: result.requestState }
+          : {}),
+      }),
+    };
+  }
+  if (result.resultType === "task") {
+    return { callId, isError: false, content: JSON.stringify(result) };
+  }
+  return {
+    callId,
+    isError: result.isError === true,
+    content:
+      typeof result.content === "string"
+        ? result.content
+        : JSON.stringify(result.content),
+  };
 }
 
 async function resolveFetch(
@@ -101,8 +140,11 @@ export async function mcpTools(
     const clientOpts = {
       ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
       timeoutMs,
+      ...(options.extensions !== undefined
+        ? { extensions: options.extensions }
+        : {}),
     };
-    const session = await mcpInitialize(server.url, clientOpts);
+    const session = await mcpConnect(server.url, clientOpts);
     const tools = await mcpListTools(server.url, { ...clientOpts, session });
     assertCatalogNames(server.name, tools);
     for (const tool of tools) {
@@ -153,8 +195,11 @@ export async function mcpTools(
             const opts = {
               ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
               timeoutMs,
+              ...(options.extensions !== undefined
+                ? { extensions: options.extensions }
+                : {}),
             };
-            const session = await mcpInitialize(server.url, opts);
+            const session = await mcpConnect(server.url, opts);
             return { ...opts, session };
           })();
           clientByServer.set(server.name, client);
@@ -179,20 +224,14 @@ export async function mcpTools(
                 mcpCallTool(found.server.url, found.tool.name, call.arguments, {
                   ...client,
                   signal,
+                  inputSchema: found.tool.inputSchema,
                 }),
               )
               .catch((cause: unknown) => {
                 clientByServer.delete(found.server.name);
                 throw cause;
               });
-            return {
-              callId: call.id,
-              isError: result.isError === true,
-              content:
-                typeof result.content === "string"
-                  ? result.content
-                  : JSON.stringify(result.content),
-            };
+            return toolResult(call.id, result);
           } catch (err) {
             return {
               callId: call.id,

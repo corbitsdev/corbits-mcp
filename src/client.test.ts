@@ -26,6 +26,9 @@ describe("mcpInitialize / mcpListTools / mcpCallTool over JSON", () => {
     expect(tools[1]?.annotations?.destructiveHint).toBe(true);
 
     const result = await mcpCallTool(handle.url, "echo", { text: "hi" });
+    expect(result.resultType).toBe("complete");
+    if (result.resultType !== "complete")
+      throw new Error("expected a complete result");
     expect(result.content).toBe("hi");
   });
 

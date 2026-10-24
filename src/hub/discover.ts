@@ -18,8 +18,9 @@ import type { Hono, MiddlewareHandler } from "hono";
 
 import {
   McpError,
-  mcpInitialize,
+  mcpConnect,
   mcpListTools,
+  type McpCacheScope,
   type McpTool,
   type McpServerInfo,
 } from "../client.js";
@@ -133,6 +134,8 @@ const DISCOVERY_TIMEOUT_MS = 30_000;
 export type McpDiscovery = {
   readonly serverInfo: McpServerInfo;
   readonly tools: readonly McpTool[];
+  readonly ttlMs?: number;
+  readonly cacheScope?: McpCacheScope;
 };
 
 /**
@@ -183,7 +186,7 @@ export async function discoverMcpServer(args: {
     fetch: pinned,
     timeoutMs: args.timeoutMs ?? DISCOVERY_TIMEOUT_MS,
   };
-  const session = await mcpInitialize(args.url, client);
+  const session = await mcpConnect(args.url, client);
   const tools = await mcpListTools(args.url, { ...client, session });
   return {
     serverInfo: {
@@ -193,6 +196,8 @@ export async function discoverMcpServer(args: {
         : {}),
     },
     tools,
+    ...(tools.ttlMs !== undefined ? { ttlMs: tools.ttlMs } : {}),
+    ...(tools.cacheScope !== undefined ? { cacheScope: tools.cacheScope } : {}),
   };
 }
 

@@ -2,15 +2,15 @@
 
 ## Purpose
 
-`@corbits/mcp` turns each tool on a remote MCP server (streamable HTTP, 2025-03-26 spec) into its own `@intx/agent` tool for the Interchange sidecar. It owns the MCP client, tool naming and the ask floor, the sidecar-bundle factory, the hub catalog-discovery route and MCP OAuth discovery. It does not own the OAuth login itself (`@corbits/oauth-core`) or credential storage (the hub).
+`@corbits/mcp` turns each tool on a remote MCP server into its own `@intx/agent` tool for the Interchange sidecar. The client speaks MCP **2026-07-28** (stateless `server/discover`, per-request `_meta` and `Mcp-*` headers). A server that does not implement `server/discover`, times out, or only speaks `2025-11-25` / `2025-06-18` / `2025-03-26` / `2024-11-05` falls back to `initialize` plus `Mcp-Session-Id`. It owns the MCP client, tool naming and the ask floor, the sidecar-bundle factory, the hub catalog-discovery route and MCP OAuth discovery. It does not own the OAuth login itself (`@corbits/oauth-core`) or credential storage (the hub).
 
 ## Layout
 
-- `src/client.ts`: streamable-HTTP JSON-RPC client (`initialize`, `tools/list`, `tools/call`).
+- `src/client.ts`: streamable-HTTP JSON-RPC client. `mcpConnect` probes `server/discover`. Modern calls are `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/read`, `resources/templates/list`, `completion/complete`, and `subscriptions/listen`. `mcpInitialize` is the explicit legacy handshake. Extensions (`io.modelcontextprotocol/tasks`, `io.modelcontextprotocol/ui`, `io.modelcontextprotocol/skills`) are advertised and sent only when the caller opts in by extension id.
 - `src/tool.ts`: `mcpTools`, one `@intx/agent` tool per remote MCP tool, named `<server>.<tool>`.
 - `src/naming.ts`: qualified names and the ask floor, shared by `mcpTools` and the sidecar bundle.
 - `src/url.ts`: which MCP endpoints a token may be sent to.
-- `src/oauth-discovery.ts`: MCP OAuth metadata discovery and dynamic client registration.
+- `src/oauth-discovery.ts`: MCP OAuth metadata discovery, Client ID Metadata Documents, dynamic client registration, issuer-keyed stored credentials, and RFC 9207 `iss` checks before a code is read.
 - `src/sidecar-bundle.ts`: the `./sidecar-bundle` entry a deployed agent's bundle loads.
 - `src/hub/discover.ts`, `src/hub/index.ts`: the `./hub` entry, server-side catalog discovery.
 - `src/test-server.ts`: in-test MCP server used by the tests.
@@ -38,21 +38,29 @@ never hold a server's bearer.
 
 ### Why not `@modelcontextprotocol/sdk`
 
-The client in `src/client.ts` is hand-rolled on purpose. It only sends
-`initialize`, `tools/list` and `tools/call`, each as one request awaiting one
-reply, plus the `notifications/initialized` notification; in the sidecar bundle that request goes through a fetch the mediated
-credential handle pins to the server's origin. That needs only JSON-RPC
-framing and reading the matching `data:` frame from an event-stream reply.
+The client in `src/client.ts` is hand-rolled on purpose. A 2026 server gets
+one POST per call after `server/discover`: protocol version, client info, and
+client capabilities travel in `_meta`, and `Mcp-Method` / `Mcp-Name` /
+`MCP-Protocol-Version` travel as headers. There is no session id, no
+`initialize`, and no `notifications/initialized` on that path. `input_required`
+comes back as a typed result and `mcpContinue` retries the original method
+with `inputResponses`. `subscriptions/listen` is the long-lived stream.
+`notifications/progress` stays on the response stream of the call that asked
+for it. Aborting an in-flight call posts `notifications/cancelled`.
+
+A legacy server still gets `initialize`, `notifications/initialized`, and
+`Mcp-Session-Id`. In the sidecar bundle every request goes through a fetch
+the mediated credential handle pins to the server's origin.
 
 The SDK's streamable-HTTP client transport is built for long-lived sessions
 (resumable streams, server-initiated requests) and installs `zod`, `ajv`,
-`express` and more, none of which this package uses.
-
-The session a stateful server issues on `initialize` is carried in
-`McpSession` and sent as `Mcp-Session-Id` with `MCP-Protocol-Version` on
-every later request. Resumable streams and server-to-client requests are not
-supported. `e2e/` runs discovery and tool calls against the SDK's stateless
-and stateful server transports; the SDK is a devDependency only.
+`express` and more, none of which this package uses. Resumable streams
+(`Last-Event-ID`), the removed HTTP+SSE transport, `ping`, and the deprecated
+roots, sampling, and logging methods are not implemented. `e2e/` runs
+discovery and tool calls against the SDK's stateless and stateful 2025
+transports and against a small 2026 fixture; the SDK is a devDependency only.
+Prompts, resources, and subscriptions are client methods. They are not
+projected into agent tools, and tools stay the only grantable unit.
 
 ## Local development
 
