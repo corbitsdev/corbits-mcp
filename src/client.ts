@@ -82,7 +82,9 @@ export type McpToolList = McpTool[] & {
 };
 
 export interface McpToolResult {
-  resultType: "complete";
+  /** `"complete"` on a resolved result; absent while the call awaits input
+   * or runs a task. Optional so resolved results keep the previous contract. */
+  resultType?: "complete";
   content: unknown;
   isError?: boolean;
   structuredContent?: unknown;
