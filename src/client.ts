@@ -1006,17 +1006,32 @@ function shouldFallback(error: unknown): boolean {
   if (!(error instanceof McpError)) return false;
   if (error.cancelled) return false;
   if (error.timedOut) return true;
+  // Fall back only when the server may speak a legacy version: it answers the
+  // `server/discover` probe with method-not-found, at the transport edge with an
+  // HTTP 404 for a method it does not know, or reports that it cannot serve the
+  // stateless protocol version we asked for. Authz failures, rate limits, server
+  // errors, malformed responses, and other JSON-RPC errors are real failures that
+  // surface to the caller instead of triggering the legacy handshake; modern
+  // errors reject the stateless metadata outright.
+  if (error.code === McpErrorCode.MethodNotFound) return true;
+  if (error.status === 404) return true;
+  if (/unsupported protocol version/i.test(error.message)) return true;
+  if (/server not initialized/i.test(error.message)) return true;
+  if (error.status !== undefined) return false;
   if (error.code !== undefined && MODERN_ERROR_CODES.has(error.code))
     return false;
-  return true;
+  // Malformed responses and any other error are real failures, not legacy.
+  return false;
 }
 
 /**
  * Probe `server/discover`. A 2026-07-28 server returns a stateless session:
  * later calls send no `initialize`, no `notifications/initialized`, and no
- * `Mcp-Session-Id`. Method-not-found, a timeout, any non-modern error, or a
- * server that only speaks a 2025 (or earlier) version falls back to
- * `initialize`.
+ * `Mcp-Session-Id`. A method-not-found, a timeout, or a server that only
+ * speaks a 2025 (or earlier) version falls back to `initialize`. Authz
+ * failures, rate limits, server errors, and malformed responses are real
+ * failures and surface to the caller instead of triggering the legacy
+ * handshake.
  */
 export async function mcpConnect(
   url: string,

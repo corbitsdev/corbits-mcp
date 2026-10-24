@@ -265,6 +265,30 @@ describe("MCP 2026-07-28", () => {
     }
   });
 
+  test("authz, rate-limit, server, and malformed discover errors do not fall back", async () => {
+    const failures: Array<{ status: number; body: string }> = [
+      { status: 403, body: "forbidden" },
+      { status: 429, body: "slow down" },
+      { status: 503, body: "boom" },
+      { status: 200, body: "not json" },
+    ];
+    for (const { status, body } of failures) {
+      const srv = jsonServer(() => new Response(body, { status }));
+      try {
+        const failure = await mcpConnect(srv.url).catch(
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(McpError);
+        expect(srv.seen.map((s) => s.method)).toEqual(["server/discover"]);
+        expect((failure as McpError).status).toBe(
+          status === 200 ? undefined : status,
+        );
+      } finally {
+        srv.stop();
+      }
+    }
+  });
+
   test("header mismatch and an unsupported modern version do not fall back", async () => {
     const mismatch = jsonServer((seen) =>
       rpcError(
