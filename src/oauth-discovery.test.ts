@@ -555,6 +555,25 @@ describe("MCP client registration choice", () => {
     ).toThrow(/path/);
   });
 
+  test("refuses a client metadata URL with dot segments", () => {
+    expect(() =>
+      mcpClientIdMetadataDocument({
+        metadataUrl: "https://app.example.com/oauth/../client.json",
+        clientName: "Corbits",
+        redirectUris: ["http://127.0.0.1/callback"],
+      }),
+    ).toThrow(/dot segments/);
+    expect(() =>
+      preferredMcpClientRegistration({
+        authorizationServer: {
+          clientIdMetadataDocumentSupported: true,
+          registrationEndpoint: "https://auth.example.com/register",
+        },
+        clientMetadataUrl: "https://app.example.com/oauth/../client.json",
+      }),
+    ).toThrow(/dot segments/);
+  });
+
   test("prefers pre-registered, then CIMD, then dynamic registration", () => {
     expect(
       preferredMcpClientRegistration({

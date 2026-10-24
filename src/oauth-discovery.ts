@@ -495,6 +495,16 @@ function assertClientMetadataUrl(metadataUrl: string): void {
     throw new OAuthDiscoveryError(
       `client metadata URL must not contain a fragment or userinfo: ${metadataUrl}`,
     );
+  // The URL parser normalizes away "." and ".." path segments, so inspect the
+  // raw string to refuse metadata URLs that use dot segments.
+  if (
+    metadataUrl
+      .split("/")
+      .some((segment) => segment === "." || segment === "..")
+  )
+    throw new OAuthDiscoveryError(
+      `client metadata URL must not contain dot segments: ${metadataUrl}`,
+    );
 }
 
 /**
