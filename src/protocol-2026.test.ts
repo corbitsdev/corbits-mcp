@@ -148,6 +148,49 @@ describe("MCP 2026-07-28", () => {
     }
   });
 
+  test("a core call with no session speaks the stateless protocol directly", async () => {
+    const srv = jsonServer((seen) => {
+      if (seen.method === "server/discover") {
+        return rpc(seen.body.id, {
+          supportedVersions: [MCP_PROTOCOL_VERSION],
+          capabilities: { tools: {} },
+        });
+      }
+      if (seen.method === "tools/list") return rpc(seen.body.id, { tools: [] });
+      if (seen.method === "tools/call") {
+        return rpc(seen.body.id, { resultType: "complete", content: "plain" });
+      }
+      return rpcError(seen.body.id, McpErrorCode.MethodNotFound, "no");
+    });
+    try {
+      const tools = await mcpListTools(srv.url);
+      expect(tools).toEqual([]);
+      const result = await mcpCallTool(srv.url, "echo", { text: "hi" });
+      expect(result.resultType).toBe("complete");
+      if (result.resultType !== "complete")
+        throw new Error("expected a complete result");
+      expect(result.content).toBe("plain");
+
+      for (const seen of srv.seen) {
+        expect(seen.headers.get("MCP-Protocol-Version")).toBe(
+          MCP_PROTOCOL_VERSION,
+        );
+        expect(seen.headers.get("Mcp-Method")).toBe(seen.method);
+        expect(seen.headers.has("mcp-session-id")).toBe(false);
+      }
+      const call = srv.seen.find((entry) => entry.method === "tools/call");
+      if (call === undefined) throw new Error("expected a tools/call");
+      expect(call.headers.get("Mcp-Name")).toBe("echo");
+      expect(meta(call)).toEqual({
+        [META_PROTOCOL]: MCP_PROTOCOL_VERSION,
+        [META_CLIENT_INFO]: { name: "@corbits/mcp", version: "0.3.1" },
+        [META_CLIENT_CAPABILITIES]: {},
+      });
+    } finally {
+      srv.stop();
+    }
+  });
+
   test("method-not-found, a legacy version list, and a timeout fall back to initialize", async () => {
     const notFound = jsonServer((seen) => {
       if (seen.method === "server/discover") {

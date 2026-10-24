@@ -1188,7 +1188,8 @@ async function requestResult(
   params: Record<string, unknown> | undefined,
   opts: McpClientOptions,
 ): Promise<unknown> {
-  const { result } = await sendRequest(url, method, params, opts);
+  const callOpts = opts.session === undefined ? asModern(opts) : opts;
+  const { result } = await sendRequest(url, method, params, callOpts);
   const kind = resultKind(result);
   if (kind === "invalid") {
     throw new McpError(
