@@ -951,7 +951,7 @@ async function initializeLegacy(
     {
       protocolVersion,
       capabilities: {},
-      clientInfo: { name: "@corbits/mcp", version: "0.2.0" },
+      clientInfo: { name: "@corbits/mcp", version: "0.3.1" },
     },
     {
       ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
