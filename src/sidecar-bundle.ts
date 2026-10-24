@@ -21,10 +21,11 @@ import { type } from "arktype";
 import {
   DEFAULT_TIMEOUT_MS,
   mcpCallTool,
-  mcpInitialize,
+  mcpConnect,
   type McpClientOptions,
   McpToolSchema,
   type McpTool,
+  type McpToolCallResult,
 } from "./client.js";
 import {
   assertCatalogNames,
@@ -76,8 +77,10 @@ export interface McpBoundServer {
 
 export interface McpServersConfig {
   readonly servers: readonly McpBoundServer[];
-  /** Per-request bound on `initialize` and `tools/call`; defaults to 60s. */
+  /** Per-request bound on connect and `tools/call`; defaults to 60s. */
   readonly timeoutMs?: number;
+  /** Extension ids advertised on every request. Off unless listed. */
+  readonly extensions?: readonly string[];
 }
 
 const BoundServerSchema = type({
@@ -90,6 +93,7 @@ const BoundServerSchema = type({
 const ConfigSchema = type({
   servers: BoundServerSchema.array(),
   "timeoutMs?": "number > 0",
+  "extensions?": "string[]",
 });
 
 /** Validate at construction: a malformed deploy config is a deploy bug, not a
@@ -120,6 +124,36 @@ const TextBlock = type({ type: "'text'", text: "string" }).array();
  * MCP results are never interpreted: text blocks come back as their text so
  * the model reads prose, and anything else is handed over verbatim as JSON.
  */
+function shapedToolResult(
+  callId: string,
+  result: McpToolCallResult,
+): { callId: string; isError: boolean; content: string } {
+  if (result.resultType === "input_required") {
+    return {
+      callId,
+      isError: true,
+      content: JSON.stringify({
+        resultType: result.resultType,
+        method: result.method,
+        ...(result.inputRequests !== undefined
+          ? { inputRequests: result.inputRequests }
+          : {}),
+        ...(result.requestState !== undefined
+          ? { requestState: result.requestState }
+          : {}),
+      }),
+    };
+  }
+  if (result.resultType === "task") {
+    return { callId, isError: false, content: JSON.stringify(result) };
+  }
+  return {
+    callId,
+    isError: result.isError === true,
+    content: shapeMcpContent(result.content),
+  };
+}
+
 export function shapeMcpContent(content: unknown): string {
   if (typeof content === "string") return content;
   const blocks = TextBlock(content);
@@ -204,11 +238,20 @@ export function mcpServers(
           }
           const mediated: MediatedFetch = (input, init) =>
             credential.fetch(input, init);
-          const session = await mcpInitialize(requestPath(runtime.server.url), {
+          const session = await mcpConnect(requestPath(runtime.server.url), {
             fetch: mediated,
             timeoutMs,
+            ...(config.extensions !== undefined
+              ? { extensions: config.extensions }
+              : {}),
           });
-          return { fetch: mediated, session };
+          return {
+            fetch: mediated,
+            session,
+            ...(config.extensions !== undefined
+              ? { extensions: config.extensions }
+              : {}),
+          };
         })().catch((cause: unknown) => {
           runtime.ready = undefined;
           runtime.handle = undefined;
@@ -236,17 +279,18 @@ export function mcpServers(
               requestPath(found.server.url),
               found.tool.name,
               call.arguments,
-              { ...client, timeoutMs, signal },
+              {
+                ...client,
+                timeoutMs,
+                signal,
+                inputSchema: found.tool.inputSchema,
+              },
             ).catch((cause: unknown) => {
               // The session may have expired; the next call opens a new one.
               runtime.ready = undefined;
               throw cause;
             });
-            return {
-              callId: call.id,
-              isError: result.isError === true,
-              content: shapeMcpContent(result.content),
-            };
+            return shapedToolResult(call.id, result);
           } catch (cause) {
             // One server's failure is that server's tool error, never the
             // agent's: every other bound server keeps working.

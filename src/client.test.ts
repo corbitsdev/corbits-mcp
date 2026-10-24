@@ -6,6 +6,7 @@ import {
   mcpCallTool,
   mcpInitialize,
   mcpListTools,
+  type McpToolResult,
 } from "./client.js";
 import { startTestMcpServer, type TestServerHandle } from "./test-server.js";
 
@@ -26,7 +27,21 @@ describe("mcpInitialize / mcpListTools / mcpCallTool over JSON", () => {
     expect(tools[1]?.annotations?.destructiveHint).toBe(true);
 
     const result = await mcpCallTool(handle.url, "echo", { text: "hi" });
+    expect(result.resultType).toBe("complete");
+    if (result.resultType !== "complete")
+      throw new Error("expected a complete result");
     expect(result.content).toBe("hi");
+  });
+
+  test("a resolved tools/call result keeps the previous McpToolResult contract", async () => {
+    handle = startTestMcpServer();
+    const result = await mcpCallTool(handle.url, "echo", { text: "hi" });
+    expect(result.resultType).toBe("complete");
+    if (result.resultType === "input_required" || result.resultType === "task")
+      throw new Error("expected a complete result");
+    const resolved: McpToolResult = result;
+    expect(resolved.content).toBe("hi");
+    expect(resolved.isError).toBeUndefined();
   });
 
   test("surfaces a JSON-RPC error as McpError", async () => {

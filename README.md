@@ -1,6 +1,6 @@
 # @corbits/mcp
 
-A Corbits tool pack for the Interchange sidecar that turns each tool on a remote Model Context Protocol server into its own `@intx/agent` tool, over streamable HTTP (2025-03-26 spec). It also ships a hub route for catalog discovery and OAuth discovery helpers, and the client works standalone.
+A Corbits tool pack for the Interchange sidecar that turns each tool on a remote Model Context Protocol server into its own `@intx/agent` tool, over streamable HTTP. The client speaks the 2026-07-28 revision and falls back to the 2025 `initialize` handshake when the server does not. It also ships a hub route for catalog discovery and OAuth discovery helpers, and the client works standalone.
 
 ## Why @corbits/mcp?
 
@@ -8,7 +8,11 @@ A Corbits tool pack for the Interchange sidecar that turns each tool on a remote
 2. **The agent never holds the server's token.** Calls go through a mediated credential: a fetch pinned to the server's origin that adds the bearer per request.
 3. **Destructive tools stay behind approval.** Every generated tool starts `ask`-marked, and a tool the server flags `destructiveHint: true` cannot be lowered to `allow`.
 
-It supports `initialize`, `tools/list` and `tools/call` only, against stateless and stateful (`Mcp-Session-Id`) servers.
+`mcpConnect` probes `server/discover`. A 2026-07-28 server is stateless: later calls send `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name`, and carry `io.modelcontextprotocol/protocolVersion`, `clientInfo`, and `clientCapabilities` in `_meta`. They do not send `initialize`, `notifications/initialized`, or `Mcp-Session-Id`. A call made with no session speaks this stateless path directly; a session handed over from `mcpConnect` is stateless too. If `server/discover` is missing, times out, or the server only speaks a 2025 (or earlier) version, the client keeps the `initialize` plus `Mcp-Session-Id` path.
+
+Core methods, paginated where the spec uses a cursor: `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/read`, `resources/templates/list`, `completion/complete`. A missing `resultType` is `complete`. `input_required` is returned to the caller (method, `inputRequests`, `requestState`) and retried with `mcpContinue`. `subscriptions/listen` is a long-lived POST; `notifications/progress` stays on the call that asked for it; aborting an in-flight call sends `notifications/cancelled`.
+
+Extensions are off unless named in `extensions`: `io.modelcontextprotocol/tasks` (`tasks/get`, `tasks/update`, `tasks/cancel`, and a `task` result), `io.modelcontextprotocol/ui` (capability advertisement and passthrough of tool-result UI metadata; no widget renderer), and `io.modelcontextprotocol/skills` (`skills/list`, `skills/get`, with `resources/directory/read` only when the server declares `directoryRead`). Roots, sampling, logging, `ping`, HTTP+SSE, and SSE resumption are not implemented. Prompts, resources, and subscriptions are not projected into agent tools. Tools remain the only grantable unit. Catalog entries keep `outputSchema`, `annotations.title`, the four boolean hints, `ttlMs`, and `cacheScope`. JSON Schema is passed through, including unknown 2020-12 keywords.
 
 ## Install
 
@@ -29,10 +33,10 @@ bun add @corbits/credential-http @intx/authz @intx/crypto @intx/db @intx/hub-api
 Lists the tools on a public MCP server:
 
 ```ts
-import { mcpInitialize, mcpListTools } from "@corbits/mcp";
+import { mcpConnect, mcpListTools } from "@corbits/mcp";
 
 const url = "https://mcp.deepwiki.com/mcp";
-const session = await mcpInitialize(url);
+const session = await mcpConnect(url);
 for (const tool of await mcpListTools(url, { session })) {
   console.log(`${tool.name}: ${tool.description ?? ""}`);
 }
@@ -50,21 +54,26 @@ Every client call takes `{ fetch, timeoutMs, signal, session }` as its last argu
 
 ## Reference
 
-| Export                                            | Entry                         | Purpose                                                                                                           |
-| ------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `mcpInitialize(url, opts?)`                       | `@corbits/mcp`                | Send `initialize` and `notifications/initialized`; returns the `McpSession` to pass to later calls.               |
-| `mcpListTools(url, opts?)`                        | `@corbits/mcp`                | Send `tools/list`; returns `McpTool[]`.                                                                           |
-| `mcpCallTool(url, name, args, opts?)`             | `@corbits/mcp`                | Send `tools/call`; returns `McpToolResult`.                                                                       |
-| `mcpTools(options, env?)`                         | `@corbits/mcp`                | Discover each server live, then build tools. For hosts that can await; servers use `name` and `credentialHandle`. |
-| `qualifiedName`, `toolDescription`, `isAskExempt` | `@corbits/mcp`                | Naming and `ask`-floor rules the tool builders use.                                                               |
-| `discoverMcpLoginEntry({ resourceUrl })`          | `@corbits/mcp`                | Resolve the authorization server (RFC 9728, then RFC 8414).                                                       |
-| `registerMcpClient(opts)`                         | `@corbits/mcp`                | Register a loopback public client (RFC 7591).                                                                     |
-| `mcpClientConfig(entry, opts)`                    | `@corbits/mcp`                | Build the `OAuthClientConfig` oauth-core's login helpers take.                                                    |
-| `selectMcpScopes(opts)`                           | `@corbits/mcp`                | Pick scopes in the MCP spec's selection order.                                                                    |
-| `mcpServers(config)`                              | `@corbits/mcp/sidecar-bundle` | Build tools from stored catalogs over mediated credentials.                                                       |
-| `shapeMcpContent(content)`, `SIDECAR_BUNDLE_ID`   | `@corbits/mcp/sidecar-bundle` | Result shaping and the bundle's tool id.                                                                          |
-| `mountMcpDiscovery(app, opts)`                    | `@corbits/mcp/hub`            | Mount `POST /mcp/discover`.                                                                                       |
-| `discoverMcpServer(args)`, `readCredential(opts)` | `@corbits/mcp/hub`            | The discovery and credential reads the route uses.                                                                |
+| Export                                                                                                                          | Entry                         | Purpose                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcpConnect(url, opts?)`                                                                                                        | `@corbits/mcp`                | Probe `server/discover`, or fall back to `initialize`; returns the `McpSession` for later calls.                                          |
+| `mcpInitialize(url, opts?)`                                                                                                     | `@corbits/mcp`                | Explicit legacy `initialize` and `notifications/initialized`.                                                                             |
+| `mcpListTools(url, opts?)`                                                                                                      | `@corbits/mcp`                | Send `tools/list`; returns `McpTool[]` with `ttlMs` and `cacheScope` when the server sent them.                                           |
+| `mcpCallTool(url, name, args, opts?)`                                                                                           | `@corbits/mcp`                | Send `tools/call`. A complete result, `input_required`, or (when tasks are enabled) a task handle.                                        |
+| `mcpContinue(url, pending, inputResponses, opts?)`                                                                              | `@corbits/mcp`                | Retry an `input_required` result, echoing `requestState`.                                                                                 |
+| `mcpListPrompts`, `mcpGetPrompt`, `mcpListResources`, `mcpReadResource`, `mcpListResourceTemplates`, `mcpComplete`, `mcpListen` | `@corbits/mcp`                | The rest of the core client. Prompts, resources, and subscriptions are not agent tools.                                                   |
+| `mcpTools(options, env?)`                                                                                                       | `@corbits/mcp`                | Discover each server live, then build tools. For hosts that can await; servers use `name` and `credentialHandle`.                         |
+| `qualifiedName`, `toolDescription`, `isAskExempt`                                                                               | `@corbits/mcp`                | Naming and `ask`-floor rules the tool builders use.                                                                                       |
+| `discoverMcpLoginEntry({ resourceUrl })`                                                                                        | `@corbits/mcp`                | Resolve the authorization server (RFC 9728, then RFC 8414).                                                                               |
+| `registerMcpClient(opts)`                                                                                                       | `@corbits/mcp`                | Register a public client (RFC 7591), `application_type` `"native"` unless set.                                                            |
+| `preferredMcpClientRegistration`, `mcpClientIdMetadataDocument`, `resolveStoredMcpClient`                                       | `@corbits/mcp`                | Pre-registered, then Client ID Metadata Documents, then dynamic registration. Dynamic and pre-registered credentials are keyed by issuer. |
+| `assertAuthorizationIssuer`, `readAuthorizationCallback`                                                                        | `@corbits/mcp`                | Check RFC 9207 `iss` against the recorded issuer before the code is read.                                                                 |
+| `mcpClientConfig(entry, opts)`                                                                                                  | `@corbits/mcp`                | Build the `OAuthClientConfig` oauth-core's login helpers take.                                                                            |
+| `selectMcpScopes(opts)`                                                                                                         | `@corbits/mcp`                | Pick scopes in the MCP spec's selection order.                                                                                            |
+| `mcpServers(config)`                                                                                                            | `@corbits/mcp/sidecar-bundle` | Build tools from stored catalogs over mediated credentials.                                                                               |
+| `shapeMcpContent(content)`, `SIDECAR_BUNDLE_ID`                                                                                 | `@corbits/mcp/sidecar-bundle` | Result shaping and the bundle's tool id.                                                                                                  |
+| `mountMcpDiscovery(app, opts)`                                                                                                  | `@corbits/mcp/hub`            | Mount `POST /mcp/discover`.                                                                                                               |
+| `discoverMcpServer(args)`, `readCredential(opts)`                                                                               | `@corbits/mcp/hub`            | The discovery and credential reads the route uses.                                                                                        |
 
 `McpToolSchema` validates a catalog entry (`McpTool`). Transport and protocol failures throw `McpError`. OAuth discovery failures throw `OAuthDiscoveryError` from `@corbits/oauth-core`.
 
@@ -159,7 +168,7 @@ export const tools = mcpServers({
 });
 ```
 
-Each catalog entry becomes a tool named `<handle>.<tool>`, with the remote `inputSchema` passed through and the call proxied to `tools/call`. Text content comes back as text and anything else as JSON; `isError` passes through. A handle that does not resolve, or a server that fails `initialize`, fails only that server's calls.
+Each catalog entry becomes a tool named `<handle>.<tool>`, with the remote `inputSchema` passed through and the call proxied to `tools/call`. Text content comes back as text and anything else as JSON; `isError` passes through. `input_required` comes back as an error result whose JSON carries the method, `inputRequests`, and `requestState`. A handle that does not resolve, or a server that fails the handshake, fails only that server's calls.
 
 `handle` is the credential handle the host binds this server's token to. The bundle resolves it from the runtime `credentials` capability and expects an `http` credential, such as the one `@corbits/credential-http`'s MCP provider returns. The package manifest declares the `mcp-server` credential for this.
 
