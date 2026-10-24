@@ -42,7 +42,8 @@ The client in `src/client.ts` is hand-rolled on purpose. A 2026 server gets
 one POST per call after `server/discover`: protocol version, client info, and
 client capabilities travel in `_meta`, and `Mcp-Method` / `Mcp-Name` /
 `MCP-Protocol-Version` travel as headers. There is no session id, no
-`initialize`, and no `notifications/initialized` on that path. `input_required`
+`initialize`, and no `notifications/initialized` on that path. A call made with
+no session speaks this stateless path directly. `input_required`
 comes back as a typed result and `mcpContinue` retries the original method
 with `inputResponses`. `subscriptions/listen` is the long-lived stream.
 `notifications/progress` stays on the response stream of the call that asked
