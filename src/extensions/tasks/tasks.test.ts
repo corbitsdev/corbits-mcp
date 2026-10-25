@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTaskStore } from "./file-store.js";
 import { createTaskRuntime, pollTask, validateTaskRecord } from "./index.js";
-import type { McpTaskExecutor, McpTaskIdentity } from "./contracts.js";
+import type {
+  McpTaskExecutor,
+  McpTaskIdentity,
+  McpTaskStore,
+} from "./contracts.js";
 import type { DetailedTask, InputRequests } from "../../protocol/index.js";
 const identity: McpTaskIdentity = {
   tenantId: "t",
@@ -136,10 +140,16 @@ test("input authorization, partial answers, lifetime key uniqueness, cooperative
     expect((await runtime.get(identity, initial.taskId)).status).toBe(
       "input_required",
     );
-    await runtime.submitInput(identity, initial.taskId, {
-      approval: { action: "accept", content: { yes: true } },
-    });
+    const answeredRevision = (await f.store.get(initial.taskId))!.revision;
+    await expect(
+      runtime.submitInput(identity, initial.taskId, {
+        approval: { action: "accept", content: { yes: true } },
+      }),
+    ).rejects.toThrow("not waiting");
     expect(submissions).toBe(1);
+    expect((await f.store.get(initial.taskId))!.revision).toBe(
+      answeredRevision,
+    );
     await expect(
       runtime.transition(identity, initial.taskId, {
         ...initial,
@@ -195,6 +205,82 @@ test("expired tasks are inaccessible and removed; ambiguous dispatch is durable 
     ).rejects.toThrow("Unknown");
     await runtime.recover();
     expect(await f.store.list()).toHaveLength(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+test("submitInput fails without a revision bump unless the task is waiting for that input", async () => {
+  const f = await fixture();
+  let submissions = 0;
+  const countInput: McpTaskExecutor = {
+    ...executor,
+    async submitInput() {
+      submissions++;
+    },
+  };
+  try {
+    const runtime = createTaskRuntime({
+      store: f.store,
+      executor: countInput,
+      async authorizeInput() {},
+    });
+    const created = await runtime.create(identity, { name: "work" });
+    const before = (await f.store.get(created.taskId))!;
+    await expect(
+      runtime.submitInput(identity, created.taskId, {
+        approval: { action: "accept", content: { yes: true } },
+      }),
+    ).rejects.toThrow("not waiting");
+    const after = (await f.store.get(created.taskId))!;
+    expect(after.revision).toBe(before.revision);
+    expect(after.answered).toEqual({});
+    expect(after.task.status).toBe("working");
+    expect(submissions).toBe(0);
+    await runtime.transition(identity, created.taskId, {
+      ...created,
+      status: "input_required",
+      inputRequests: requests,
+    });
+    const waiting = (await f.store.get(created.taskId))!;
+    let raced = false;
+    const store: McpTaskStore = {
+      durable: true,
+      create: (record) => f.store.create(record),
+      get: (taskId) => f.store.get(taskId),
+      list: () => f.store.list(),
+      expire: (now) => f.store.expire(now),
+      async compareAndSwap(taskId, revision, next) {
+        if (!raced) {
+          raced = true;
+          const current = await f.store.get(taskId);
+          if (!current) return false;
+          const { inputRequests: _pending, ...task } = current.task;
+          await f.store.compareAndSwap(taskId, current.revision, {
+            ...current,
+            revision: current.revision + 1,
+            task: { ...task, status: "working" },
+          });
+          return false;
+        }
+        return f.store.compareAndSwap(taskId, revision, next);
+      },
+    };
+    const racing = createTaskRuntime({
+      store,
+      executor: countInput,
+      async authorizeInput() {},
+    });
+    await expect(
+      racing.submitInput(identity, created.taskId, {
+        approval: { action: "accept", content: { yes: true } },
+      }),
+    ).rejects.toThrow("not waiting");
+    const racedRecord = (await f.store.get(created.taskId))!;
+    expect(raced).toBe(true);
+    expect(racedRecord.revision).toBe(waiting.revision + 1);
+    expect(racedRecord.answered).toEqual({});
+    expect(racedRecord.task.status).toBe("working");
+    expect(submissions).toBe(0);
   } finally {
     await f.cleanup();
   }

@@ -158,7 +158,8 @@ export function createTaskRuntime(options: {
       let accepted: InputResponses = {};
       const next = await update(identity, taskId, (record) => {
         accepted = {};
-        if (record.task.status !== "input_required") return record;
+        if (record.task.status !== "input_required")
+          fail("Task is not waiting for input");
         for (const [key, response] of Object.entries(responses))
           if (
             Object.hasOwn(record.task.inputRequests, key) &&
@@ -174,6 +175,8 @@ export function createTaskRuntime(options: {
             };
             delete record.task.inputRequests[key];
           }
+        if (!Object.keys(accepted).length)
+          fail("Task is not waiting for input");
         if (!Object.keys(record.task.inputRequests).length) {
           const { inputRequests: _requests, ...base } = record.task;
           record.task = { ...base, status: "working" };
