@@ -143,21 +143,30 @@ describe("MCP OAuth discovery", () => {
         body: fallbackAsMetadata,
       },
     });
-    const entry = await discoverMcpLoginEntry({ resourceUrl, fetchImpl });
+    const entry = await discoverMcpLoginEntry({
+      resourceUrl,
+      fetchImpl,
+      allowLegacyAuthorizationServerFallback: true,
+    });
     expect(entry.authorizationServer.tokenEndpoint).toBe(
       "https://auth.example.com/token",
     );
   });
 
-  test("accepts fallback metadata whose issuer differs only by a trailing slash", async () => {
+  test("rejects fallback metadata whose issuer differs only by a trailing slash", async () => {
     const { fetchImpl } = fakeFetch({
       "https://mcp.example.com/.well-known/oauth-authorization-server/mcp": {
         status: 200,
         body: { ...fallbackAsMetadata, issuer: `${resourceUrl}/` },
       },
     });
-    const entry = await discoverMcpLoginEntry({ resourceUrl, fetchImpl });
-    expect(entry.authorizationServer.issuer).toBe(`${resourceUrl}/`);
+    await expect(
+      discoverMcpLoginEntry({
+        resourceUrl,
+        fetchImpl,
+        allowLegacyAuthorizationServerFallback: true,
+      }),
+    ).rejects.toThrow(/issuer mismatch/);
   });
 
   test("rejects fallback metadata naming an issuer other than the resource", async () => {
@@ -171,7 +180,11 @@ describe("MCP OAuth discovery", () => {
       },
     });
     await expect(
-      discoverMcpLoginEntry({ resourceUrl, fetchImpl }),
+      discoverMcpLoginEntry({
+        resourceUrl,
+        fetchImpl,
+        allowLegacyAuthorizationServerFallback: true,
+      }),
     ).rejects.toThrow(/issuer mismatch/);
   });
 
@@ -619,7 +632,7 @@ describe("MCP client registration choice", () => {
       }).clientId,
     ).toBe(metadataUrl);
     expect(
-      resolveStoredMcpClient("https://auth.example.com/", {
+      resolveStoredMcpClient("https://auth.example.com", {
         kind: "dynamic",
         clientId: "dyn",
         issuer: "https://auth.example.com",
@@ -689,7 +702,7 @@ describe("authorization response iss", () => {
         }),
         { recordedIssuer: "https://auth.example.com" },
       ),
-    ).toThrow(/access_denied/);
+    ).toThrow(/rejected the request/);
   });
 });
 

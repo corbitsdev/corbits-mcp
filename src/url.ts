@@ -12,14 +12,21 @@ export function parseMcpEndpoint(raw: string): URL {
   let url: URL;
   try {
     url = new URL(raw);
-  } catch (cause) {
+  } catch {
+    throw new Error("MCP endpoint is not an absolute URL");
+  }
+  if (url.username || url.password || raw.includes("#") || /[\\\s]/.test(raw)) {
     throw new Error(
-      `"${raw}" is not an absolute URL (${cause instanceof Error ? cause.message : String(cause)})`,
+      "MCP endpoint must not contain userinfo, fragments, whitespace or backslashes",
     );
   }
+  if (url.searchParams.has("access_token"))
+    throw new Error(
+      "MCP bearer tokens must not appear in URL query parameters",
+    );
   if (url.protocol === "https:") return url;
   if (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname)) return url;
   throw new Error(
-    `MCP endpoint "${raw}" must be https (http is allowed only on loopback)`,
+    "MCP endpoint must be https (http is allowed only on loopback)",
   );
 }

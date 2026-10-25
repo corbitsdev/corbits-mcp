@@ -80,3 +80,6 @@ export {
   type StoredMcpClient,
   type AuthorizationIssuerOptions,
 } from "./oauth-discovery.js";
+
+// Guarded OAuth host APIs; standalone client imports remain dependency-light.
+export * from "./auth/index.js";
