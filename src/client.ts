@@ -1441,6 +1441,7 @@ export async function mcpContinue(
   const params: Record<string, unknown> = { ...pending.params, inputResponses };
   if (pending.requestState !== undefined)
     params.requestState = pending.requestState;
+  else delete params.requestState;
   if (pending.method === "tools/call") {
     return continueMethod(url, pending.method, params, opts, (value) => {
       const parsed = ToolCallResult(value);

@@ -497,6 +497,57 @@ describe("MCP 2026-07-28", () => {
     }
   });
 
+  test("continuations use only the latest result's requestState", async () => {
+    for (const nextState of [undefined, "", "round-two"]) {
+      let round = 0;
+      const srv = jsonServer((seen) => {
+        round += 1;
+        if (round === 3) return rpc(seen.body.id, { content: "done" });
+        return rpc(seen.body.id, {
+          resultType: "input_required",
+          inputRequests: { answer: { method: "roots/list" } },
+          ...(round === 1
+            ? { requestState: "round-one" }
+            : nextState === undefined
+              ? {}
+              : { requestState: nextState }),
+        });
+      });
+      try {
+        const first = await mcpCallTool(srv.url, "echo", { text: "hi" });
+        if (first.resultType !== "input_required")
+          throw new Error("expected first input");
+        const second = await mcpContinue(srv.url, first, {
+          answer: { roots: [] },
+        });
+        if (second.resultType !== "input_required")
+          throw new Error("expected second input");
+        const responses = { answer: { roots: [{ uri: "file:///latest" }] } };
+        const final = await mcpContinue(srv.url, second, responses);
+        expect(final).toMatchObject({
+          resultType: "complete",
+          content: "done",
+        });
+        expect(srv.seen[1]?.body.params?.requestState).toBe("round-one");
+        const last = srv.seen[2];
+        expect(last?.body.params?.requestState).toBe(nextState);
+        expect(Object.hasOwn(last?.body.params ?? {}, "requestState")).toBe(
+          nextState !== undefined,
+        );
+        expect(last?.body.params?.inputResponses).toEqual(responses);
+        for (const seen of srv.seen) {
+          expect(seen.method).toBe("tools/call");
+          expect(seen.body.params?.name).toBe("echo");
+          expect(seen.body.params?.arguments).toEqual({ text: "hi" });
+        }
+        expect(new Set(srv.seen.map((seen) => seen.body.id)).size).toBe(3);
+        expect(second.requestState).toBe(nextState);
+      } finally {
+        srv.stop();
+      }
+    }
+  });
+
   test("follows cursors, including an empty one, and keeps cache fields", async () => {
     let page = 0;
     const srv = jsonServer((seen) => {
