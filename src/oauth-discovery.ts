@@ -680,6 +680,51 @@ export function assertAuthorizationCallbackIssuer(
   assertAuthorizationIssuer(issuerOpts);
 }
 
+function urlOrigin(raw: string): string | undefined {
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameOrigin(endpoint: string, issuer: string): boolean {
+  const endpointOrigin = urlOrigin(endpoint);
+  const issuerOrigin = urlOrigin(issuer);
+  return (
+    endpointOrigin !== undefined &&
+    issuerOrigin !== undefined &&
+    endpointOrigin === issuerOrigin
+  );
+}
+
+/**
+ * Mix-up defense for metadata that names an authorization or token endpoint
+ * on a different origin than the issuer. RFC 9207 allows a missing `iss` when
+ * the server does not advertise `authorization_response_iss_parameter_supported`,
+ * but that would send the code and PKCE verifier to whichever token endpoint
+ * the metadata named. Cross-origin endpoints require a present `iss` equal to
+ * the recorded issuer. Same-origin issuers keep the ordinary missing-`iss` rule.
+ */
+export function assertCrossOriginAuthorizationIssuer(
+  params: URLSearchParams | Record<string, string | undefined | null>,
+  server: Pick<
+    McpAuthorizationServer,
+    "issuer" | "authorizationEndpoint" | "tokenEndpoint"
+  >,
+): void {
+  if (
+    sameOrigin(server.authorizationEndpoint, server.issuer) &&
+    sameOrigin(server.tokenEndpoint, server.issuer)
+  )
+    return;
+  const iss = callbackField(params, "iss");
+  if (iss === undefined || iss !== server.issuer)
+    throw new OAuthDiscoveryError(
+      "cross-origin authorization endpoints require a matching iss",
+    );
+}
+
 /**
  * Read an authorization callback. `iss` is checked before `error` or `code`
  * is acted on, and this function does not redeem the code.
@@ -711,7 +756,9 @@ export function readAuthorizationCallback(
 // spec's "Refresh Tokens" section: `wantRefresh` defaults to true (this
 // package always registers for refresh_token, see grantTypesToRequest), so
 // offline_access is added whenever the authorization server's own
-// `scopes_supported` lists it; pass `wantRefresh: false` to opt out.
+// `scopes_supported` lists it and its authorization endpoint shares the
+// issuer origin. A cross-origin authorization endpoint is not trusted to
+// widen the resource's scopes. Pass `wantRefresh: false` to opt out.
 export function selectMcpScopes(opts: SelectMcpScopesOptions): string[] {
   const priorityScopes = selectPriorityScopes(opts);
   return addOfflineAccessScope(priorityScopes, opts);
@@ -733,6 +780,16 @@ function addOfflineAccessScope(
   opts: SelectMcpScopesOptions,
 ): string[] {
   if (opts.wantRefresh === false) return scopes;
+  // Scope widening follows the authorization server that will actually receive
+  // the authorize request. Metadata from another origin must not add
+  // offline_access on top of the resource's advertised scopes.
+  if (
+    !sameOrigin(
+      opts.entry.authorizationServer.authorizationEndpoint,
+      opts.entry.authorizationServer.issuer,
+    )
+  )
+    return scopes;
   const authServerScopes = opts.entry.authorizationServer.scopesSupported;
   if (authServerScopes === undefined) return scopes;
   if (!authServerScopes.includes("offline_access")) return scopes;

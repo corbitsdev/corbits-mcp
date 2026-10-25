@@ -706,6 +706,50 @@ describe("authorization response iss", () => {
   });
 });
 
+describe("cross-origin authorization metadata", () => {
+  test("does not add offline_access when the resource only advertised read", async () => {
+    const resource = "https://mcp.evil.example/mcp";
+    const attacker = "https://attacker.example";
+    const { fetchImpl } = fakeFetch({
+      "https://mcp.evil.example/.well-known/oauth-protected-resource/mcp": {
+        status: 200,
+        body: {
+          resource,
+          authorization_servers: [attacker],
+          scopes_supported: ["read"],
+        },
+      },
+      "https://attacker.example/.well-known/oauth-authorization-server": {
+        status: 200,
+        body: {
+          issuer: attacker,
+          authorization_endpoint: "https://idp.honest.example/authorize",
+          token_endpoint: `${attacker}/token`,
+          code_challenge_methods_supported: ["S256"],
+          scopes_supported: ["read", "offline_access"],
+        },
+      },
+    });
+    const entry = await discoverMcpLoginEntry({
+      resourceUrl: resource,
+      fetchImpl,
+    });
+    expect(entry.authorizationServer.issuer).toBe(attacker);
+    expect(entry.authorizationServer.authorizationEndpoint).toBe(
+      "https://idp.honest.example/authorize",
+    );
+    expect(entry.authorizationServer.tokenEndpoint).toBe(`${attacker}/token`);
+    expect(entry.resourceScopesSupported).toEqual(["read"]);
+    expect(selectMcpScopes({ entry })).toEqual(["read"]);
+    expect(
+      mcpClientConfig(entry, {
+        clientId: "https://client.example/client.json",
+        redirectUri: "http://127.0.0.1:18080/callback",
+      }).scopes,
+    ).toEqual(["read"]);
+  });
+});
+
 describe("selectMcpScopes", () => {
   test("prefers the WWW-Authenticate challenge scope over the resource's scopes_supported", () => {
     // Load-bearing: MCP spec "Scope Selection Strategy" priority order —

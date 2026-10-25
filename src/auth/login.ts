@@ -9,6 +9,7 @@ import {
 import { type } from "arktype";
 import {
   assertAuthorizationCallbackIssuer,
+  assertCrossOriginAuthorizationIssuer,
   mcpClientConfig,
   preferredMcpClientRegistration,
   readAuthorizationCallback,
@@ -181,6 +182,10 @@ export function createMcpAuthorizationSession(opts: {
           : {}),
       };
       assertAuthorizationCallbackIssuer(params, issuerOptions);
+      assertCrossOriginAuthorizationIssuer(
+        params,
+        opts.entry.authorizationServer,
+      );
       // An authentic terminal denial consumes the one-use session. A code does
       // not: cancellation during exchange must skip persistence, and a persist
       // failure must leave the exchanged grant retryable.
