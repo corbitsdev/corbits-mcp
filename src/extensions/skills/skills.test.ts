@@ -85,6 +85,27 @@ describe("pinned Skills integrity and approval", () => {
       Buffer.from(main).toString("base64"),
     );
   });
+  test("directoryRead returns a file and a same-prefix directory", async () => {
+    const f = await fixture(
+      new Map([
+        ["skill://demo/scripts", encode("not a directory")],
+        ["skill://demo/scripts/run.sh", encode("echo safe")],
+      ]),
+    );
+    const scripts = f.publisher
+      .directoryRead("skill://demo")
+      .resources.filter((resource) => resource.name === "scripts");
+    expect(scripts).toHaveLength(2);
+    expect(scripts).toContainEqual({
+      uri: "skill://demo/scripts",
+      name: "scripts",
+    });
+    expect(scripts).toContainEqual({
+      uri: "skill://demo/scripts",
+      name: "scripts",
+      mimeType: "inode/directory",
+    });
+  });
   test("lazy retrieval, isolated cache, immutable entry and bytes", async () => {
     const f = await fixture();
     const loader = createSkillLoader(f.source);

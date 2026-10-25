@@ -31,6 +31,14 @@ const canonical = (value: unknown): string => {
       .join(",")}}`;
   return JSON.stringify(value) ?? fail("Non-JSON frontmatter");
 };
+function skillBody(entry: Skill): string {
+  const resources = entry.resources;
+  if (resources === "dynamic") return fail("Dynamic skills unsupported");
+  return canonical({
+    frontmatter: entry.frontmatter,
+    resources: [...resources].sort((a, b) => a.uri.localeCompare(b.uri)),
+  });
+}
 async function digest(bytes: Uint8Array): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
   return `sha256:${Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("")}`;
@@ -165,32 +173,34 @@ export function createSkillLoader(
   ): Promise<HeldSkill> {
     if (Object.values(origin).some((v) => !v))
       fail("Host origin identity required");
-    checkEntry(entry);
+    const snapshot = structuredClone(entry);
+    const originSnapshot = structuredClone(origin);
+    checkEntry(snapshot);
     const identity = canonical([
-      origin.serverId,
-      origin.tenantId,
-      origin.principalId,
-      origin.authorizationContextId,
-      entry.uri,
+      originSnapshot.serverId,
+      originSnapshot.tenantId,
+      originSnapshot.principalId,
+      originSnapshot.authorizationContextId,
+      snapshot.uri,
     ]);
-    const resources = entry.resources;
+    const resources = snapshot.resources;
     if (resources === "dynamic") return fail("Dynamic skills unsupported");
-    const fingerprint = await digest(
-      encoder.encode(
-        canonical({
-          frontmatter: entry.frontmatter,
-          resources: [...resources].sort((a, b) => a.uri.localeCompare(b.uri)),
-        }),
-      ),
-    );
-    if (current.get(identity)?.fingerprint !== fingerprint) {
+    const canonicalBody = skillBody(snapshot);
+    const fingerprint = await digest(encoder.encode(canonicalBody));
+    let diverged = true;
+    try {
+      diverged = skillBody(entry) !== canonicalBody;
+    } catch {
+      diverged = true;
+    }
+    if (diverged || current.get(identity)?.fingerprint !== fingerprint) {
       approvals.delete(identity);
       current.set(identity, { fingerprint, generation: {} });
     }
     const generation = current.get(identity)!.generation;
     const held: HeldSkill = freeze({
-      origin: structuredClone(origin),
-      entry: structuredClone(entry),
+      origin: originSnapshot,
+      entry: snapshot,
       identity,
       fingerprint,
     });
@@ -416,10 +426,11 @@ export async function createSkillPublisher(
         if (file.startsWith(`${uri}/`)) {
           const relative = file.slice(uri.length + 1);
           const name = relative.split("/")[0]!;
-          children.set(name, {
+          const directory = relative.includes("/");
+          children.set(`${directory ? "d" : "f"}:${name}`, {
             uri: `${uri}/${name}`,
             name,
-            ...(relative.includes("/") ? { mimeType: "inode/directory" } : {}),
+            ...(directory ? { mimeType: "inode/directory" } : {}),
           });
         }
       if (!children.size) return fail("Unknown directory");
