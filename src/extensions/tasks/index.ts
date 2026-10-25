@@ -24,6 +24,12 @@ const sameIdentity = (a: McpTaskIdentity, b: McpTaskIdentity) =>
 const fail = (message: string): never => {
   throw Object.assign(new Error(message), { code: -32602 });
 };
+const waitingTask = (
+  task: DetailedTask,
+): Extract<DetailedTask, { status: "input_required" }> => {
+  if (task.status === "input_required") return task;
+  return fail("Task is not waiting for input");
+};
 
 export function createTaskRuntime(options: {
   store: McpTaskStore;
@@ -158,14 +164,13 @@ export function createTaskRuntime(options: {
       let accepted: InputResponses = {};
       const next = await update(identity, taskId, (record) => {
         accepted = {};
-        if (record.task.status !== "input_required")
-          fail("Task is not waiting for input");
+        const task = waitingTask(record.task);
         for (const [key, response] of Object.entries(responses))
           if (
-            Object.hasOwn(record.task.inputRequests, key) &&
+            Object.hasOwn(task.inputRequests, key) &&
             !Object.hasOwn(record.answered, key)
           ) {
-            const request = record.task.inputRequests[key];
+            const request = task.inputRequests[key];
             if (request?.method === "elicitation/create")
               validateElicitationResponse(request.params, response);
             accepted = { ...accepted, [key]: structuredClone(response) };
@@ -173,12 +178,12 @@ export function createTaskRuntime(options: {
               ...record.answered,
               [key]: structuredClone(response),
             };
-            delete record.task.inputRequests[key];
+            delete task.inputRequests[key];
           }
         if (!Object.keys(accepted).length)
           fail("Task is not waiting for input");
-        if (!Object.keys(record.task.inputRequests).length) {
-          const { inputRequests: _requests, ...base } = record.task;
+        if (!Object.keys(task.inputRequests).length) {
+          const { inputRequests: _requests, status: _status, ...base } = task;
           record.task = { ...base, status: "working" };
         }
         return record;

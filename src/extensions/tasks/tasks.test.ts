@@ -254,7 +254,9 @@ test("submitInput fails without a revision bump unless the task is waiting for t
           raced = true;
           const current = await f.store.get(taskId);
           if (!current) return false;
-          const { inputRequests: _pending, ...task } = current.task;
+          const pending = current.task;
+          if (pending.status !== "input_required") return false;
+          const { inputRequests: _pending, status: _status, ...task } = pending;
           await f.store.compareAndSwap(taskId, current.revision, {
             ...current,
             revision: current.revision + 1,
