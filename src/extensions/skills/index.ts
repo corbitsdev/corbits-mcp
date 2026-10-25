@@ -183,8 +183,6 @@ export function createSkillLoader(
       originSnapshot.authorizationContextId,
       snapshot.uri,
     ]);
-    const resources = snapshot.resources;
-    if (resources === "dynamic") return fail("Dynamic skills unsupported");
     const canonicalBody = skillBody(snapshot);
     const fingerprint = await digest(encoder.encode(canonicalBody));
     let diverged = true;

@@ -680,22 +680,12 @@ export function assertAuthorizationCallbackIssuer(
   assertAuthorizationIssuer(issuerOpts);
 }
 
-function urlOrigin(raw: string): string | undefined {
-  try {
-    return new URL(raw).origin;
-  } catch {
-    return undefined;
-  }
-}
-
 function sameOrigin(endpoint: string, issuer: string): boolean {
-  const endpointOrigin = urlOrigin(endpoint);
-  const issuerOrigin = urlOrigin(issuer);
-  return (
-    endpointOrigin !== undefined &&
-    issuerOrigin !== undefined &&
-    endpointOrigin === issuerOrigin
-  );
+  try {
+    return new URL(endpoint).origin === new URL(issuer).origin;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -780,9 +770,6 @@ function addOfflineAccessScope(
   opts: SelectMcpScopesOptions,
 ): string[] {
   if (opts.wantRefresh === false) return scopes;
-  // Scope widening follows the authorization server that will actually receive
-  // the authorize request. Metadata from another origin must not add
-  // offline_access on top of the resource's advertised scopes.
   if (
     !sameOrigin(
       opts.entry.authorizationServer.authorizationEndpoint,

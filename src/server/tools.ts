@@ -56,8 +56,7 @@ export function createToolProviders(
       validateSchema(tool.definition.outputSchema);
     byName.set(tool.definition.name, tool);
   }
-  const bindings = [...byName.values()];
-  const authorizationPairs = bindings.map((tool) => ({
+  const authorizationPairs = [...byName.values()].map((tool) => ({
     resource: tool.resource,
     action: tool.action,
   }));

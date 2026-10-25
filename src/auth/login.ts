@@ -218,8 +218,7 @@ export function createMcpAuthorizationSession(opts: {
               "Authorization session expired or already consumed",
             );
           exchanged = tokens;
-        }
-        if (consumed || now() >= expiresAt)
+        } else if (consumed || now() >= expiresAt)
           throw new OAuthDiscoveryError(
             "Authorization session expired or already consumed",
           );
