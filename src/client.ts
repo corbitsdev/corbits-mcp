@@ -1,15 +1,69 @@
 // Streamable-HTTP JSON-RPC client for MCP 2026-07-28, with a legacy
 // fallback. A 2026 server is stateless: `server/discover` then one POST per
 // call, carrying protocol metadata in `_meta` and in `Mcp-*` headers, and no
-// session id. `notifications/cancelled` is still posted when the caller aborts
-// an in-flight call — 2025 servers require that notification, and closing the
-// response stream (which abort already does) is what a 2026 server treats as
-// cancellation. No SSE resumption and no HTTP+SSE transport.
+// session id. Modern cancellation closes the response stream; only legacy
+// requests send `notifications/cancelled`. No SSE resumption or HTTP+SSE.
 
-import type { FetchLike } from "@intx/harness";
 import { type } from "arktype";
-
-export const MCP_PROTOCOL_VERSION = "2026-07-28";
+import {
+  createResourceBudget,
+  type ResourceBudget,
+} from "./client/resource-budget.js";
+import {
+  MCP_PROTOCOL_VERSION,
+  type FetchLike,
+  type McpValidationContext,
+  type TaskStatus,
+  type McpSubscriptionFilter,
+} from "./protocol/types.js";
+import { McpError, McpErrorCode } from "./protocol/errors.js";
+import {
+  MCP_EXT_TASKS,
+  MCP_EXT_UI,
+  MCP_EXT_SKILLS,
+  validateExtensionSettings,
+} from "./protocol/extensions.js";
+import {
+  McpToolSchema,
+  type McpTool,
+  PromptSchema,
+  PromptResult,
+  ResourceSchema,
+  TemplateSchema,
+  CompletionResult,
+  SkillSchema,
+  TaskHandleSchema,
+  ToolCallResult,
+  DiscoverResult,
+  JsonRpcResponse,
+  validateRequest,
+  validateResult,
+  validateNotification,
+  validateTask,
+  record,
+  validateProgressToken,
+} from "./protocol/schemas.js";
+import {
+  encodeHeaderValue,
+  paramHeaders,
+  collectHeaderSlots,
+} from "./protocol/headers.js";
+import { mcpNameFor } from "./protocol/methods.js";
+import type { McpRequestTransport } from "./client/transport.js";
+export {
+  MCP_PROTOCOL_VERSION,
+  McpError,
+  McpErrorCode,
+  MCP_EXT_TASKS,
+  MCP_EXT_UI,
+  MCP_EXT_SKILLS,
+  McpToolSchema,
+};
+export type { McpTool, McpSubscriptionFilter };
+export type {
+  McpRequestTransport,
+  McpRequestOptions,
+} from "./client/transport.js";
 const LEGACY_PROTOCOL_VERSION = "2025-03-26";
 /** Legacy handshake versions, newest first. */
 const LEGACY_VERSIONS = [
@@ -18,10 +72,6 @@ const LEGACY_VERSIONS = [
   "2025-03-26",
   "2024-11-05",
 ] as const;
-
-export const MCP_EXT_TASKS = "io.modelcontextprotocol/tasks";
-export const MCP_EXT_UI = "io.modelcontextprotocol/ui";
-export const MCP_EXT_SKILLS = "io.modelcontextprotocol/skills";
 
 const META_PROTOCOL = "io.modelcontextprotocol/protocolVersion";
 const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
@@ -32,47 +82,11 @@ const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 const CLIENT_INFO = { name: "@corbits/mcp", version: "0.3.1" } as const;
 const UI_MIME_TYPES = ["text/html;profile=mcp-app"] as const;
 
-/** Methods that may answer `input_required` or, with the tasks extension, `task`. */
-const ROUND_TRIP_METHODS = new Set([
-  "tools/call",
-  "prompts/get",
-  "resources/read",
-]);
-
-export const McpErrorCode = {
-  ParseError: -32700,
-  InvalidRequest: -32600,
-  MethodNotFound: -32601,
-  InvalidParams: -32602,
-  InternalError: -32603,
-  HeaderMismatch: -32020,
-  MissingRequiredClientCapability: -32021,
-  UnsupportedProtocolVersion: -32022,
-} as const;
-
 const MODERN_ERROR_CODES = new Set<number>([
   McpErrorCode.HeaderMismatch,
   McpErrorCode.MissingRequiredClientCapability,
   McpErrorCode.UnsupportedProtocolVersion,
 ]);
-
-export const McpToolSchema = type({
-  name: "string",
-  "title?": "string",
-  "description?": "string",
-  inputSchema: "Record<string, unknown>",
-  "outputSchema?": "Record<string, unknown>",
-  "annotations?": {
-    "title?": "string",
-    "readOnlyHint?": "boolean",
-    "destructiveHint?": "boolean",
-    "idempotentHint?": "boolean",
-    "openWorldHint?": "boolean",
-  },
-  "icons?": "unknown[]",
-  "_meta?": "Record<string, unknown>",
-});
-export type McpTool = typeof McpToolSchema.infer;
 
 export type McpCacheScope = "public" | "private";
 
@@ -101,14 +115,10 @@ export interface McpInputRequired {
   inputRequests?: Record<string, unknown>;
   /** Opaque server state. Echoed verbatim on retry; never inspected. */
   requestState?: string;
+  _meta?: Record<string, unknown>;
 }
 
-export type McpTaskStatus =
-  | "working"
-  | "input_required"
-  | "completed"
-  | "failed"
-  | "cancelled";
+export type McpTaskStatus = TaskStatus;
 
 export interface McpTaskHandle {
   resultType: "task";
@@ -154,7 +164,8 @@ export type McpClientCapabilities = Record<string, unknown>;
 export interface McpClientOptions {
   /** Injectable `fetch` for tests and mediated-credential handles. */
   fetch?: FetchLike;
-  /** Abort the request, including reading its body, after this long. */
+  /** Abort the request and body after this long (default 60s).
+   * subscriptions/listen has no default deadline; set this to bound its lifetime. */
   timeoutMs?: number;
   /** Abort the request when this fires, e.g. a cancelled tool call. */
   signal?: AbortSignal;
@@ -173,6 +184,17 @@ export interface McpClientOptions {
   progressToken?: string | number;
   /** Tool `inputSchema`, so `x-mcp-header` parameters are mirrored into headers. */
   inputSchema?: Record<string, unknown>;
+  /** Validate successful structured tool output when its catalog schema is known. */
+  outputSchema?: Record<string, unknown>;
+  /** resources/read only: bound aggregate decoded text/blob bytes while streaming.
+   * Capped at 16 MiB decoded, with bounded JSON/base64 encoding overhead and
+   * a separate 64 KiB envelope cap. Unbounded reads retain the 4 MiB default. */
+  maxDecodedBytes?: number;
+  /** Optional host capabilities; never inferred from installed code. */
+  clientCapabilities?: McpClientCapabilities;
+  /** Advertise only modes for which the caller has configured user-facing host services. */
+  elicitation?: { form?: boolean; url?: boolean };
+  validation?: McpValidationContext;
 }
 
 /** The run-time `tools/call` and `initialize` bound when a caller sets none. */
@@ -184,43 +206,52 @@ const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 /** A cursor loop that never ends is a misbehaving server, not a catalog. */
 const MAX_PAGES = 1_000;
 
-const TCHAR = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-
-const JsonRpcResponse = type({
-  jsonrpc: "'2.0'",
-  id: "string | number | null",
-  "result?": "unknown",
-  "error?": { code: "number", message: "string", "data?": "unknown" },
-});
-
-export class McpError extends Error {
-  /** The HTTP status, when the server answered with a non-2xx one. */
-  readonly status: number | undefined;
-  /** JSON-RPC error code, when the server sent one. */
-  readonly code: number | undefined;
-  /** JSON-RPC `error.data`, when the server sent it. */
-  readonly data: unknown;
-  readonly timedOut: boolean;
-  readonly cancelled: boolean;
-
-  constructor(
-    message: string,
-    status?: number,
-    code?: number,
-    data?: unknown,
-    flags?: { timedOut?: boolean; cancelled?: boolean },
-  ) {
-    super(message);
-    this.name = "McpError";
-    this.status = status;
-    this.code = code;
-    this.data = data;
-    this.timedOut = flags?.timedOut === true;
-    this.cancelled = flags?.cancelled === true;
-  }
+let nextId = 1;
+const activeProgressTokens = new Set<string | number>();
+function reserveProgressToken(token: string | number | undefined): void {
+  if (token === undefined) return;
+  if (activeProgressTokens.has(token))
+    throw new McpError("progress token is already active");
+  activeProgressTokens.add(token);
 }
 
-let nextId = 1;
+function validationContext(opts: McpClientOptions): McpValidationContext {
+  return {
+    ...opts.validation,
+    era:
+      opts.session !== undefined && !isModernSession(opts.session)
+        ? "legacy"
+        : "modern",
+    extensions: enabledExtensions(opts),
+    ...(opts.session?.capabilities !== undefined
+      ? { serverCapabilities: opts.session.capabilities }
+      : {}),
+    ...(opts.inputSchema !== undefined
+      ? { inputSchema: opts.inputSchema }
+      : {}),
+    ...(opts.outputSchema !== undefined
+      ? { outputSchema: opts.outputSchema }
+      : {}),
+    clientCapabilities: clientCapabilities(opts),
+  };
+}
+
+export function createMcpRequestTransport(
+  url: string,
+  defaults: McpClientOptions = {},
+): McpRequestTransport {
+  return {
+    async request(method, params, options = {}) {
+      const opts = { ...defaults, ...options };
+      const callOpts = opts.session === undefined ? asModern(opts) : opts;
+      const { result } = await sendRequest(url, method, params, callOpts);
+      return result as Record<string, unknown>;
+    },
+    listen(filter, observer, options = {}) {
+      return mcpListen(url, filter, observer, { ...defaults, ...options });
+    },
+  };
+}
 
 function isModernSession(session: McpSession | undefined): boolean {
   return session?.protocolVersion === MCP_PROTOCOL_VERSION;
@@ -238,7 +269,21 @@ function requireExtension(opts: McpClientOptions, id: string): void {
 }
 
 function clientCapabilities(opts: McpClientOptions): McpClientCapabilities {
+  if (opts.elicitation !== undefined) {
+    const { elicitation, ...base } = opts;
+    const capabilities = clientCapabilities(base);
+    const modes = {
+      ...(elicitation.form === true ? { form: {} } : {}),
+      ...(elicitation.url === true ? { url: {} } : {}),
+    };
+    const { elicitation: _inherited, ...rest } = capabilities;
+    return {
+      ...rest,
+      ...(Object.keys(modes).length > 0 ? { elicitation: modes } : {}),
+    };
+  }
   if (
+    opts.clientCapabilities === undefined &&
     opts.extensions === undefined &&
     opts.uiMimeTypes === undefined &&
     opts.session?.clientCapabilities !== undefined
@@ -246,7 +291,10 @@ function clientCapabilities(opts: McpClientOptions): McpClientCapabilities {
     return opts.session.clientCapabilities;
   }
   const extensions = enabledExtensions(opts);
-  if (extensions.length === 0) return {};
+  validateExtensionSettings(
+    Object.fromEntries(extensions.map((id) => [id, {}])),
+  );
+  if (extensions.length === 0) return opts.clientCapabilities ?? {};
   const advertised: Record<string, unknown> = {};
   for (const id of extensions) {
     if (id === MCP_EXT_UI) {
@@ -258,7 +306,7 @@ function clientCapabilities(opts: McpClientOptions): McpClientCapabilities {
       advertised[id] = {};
     }
   }
-  return { extensions: advertised };
+  return { ...opts.clientCapabilities, extensions: advertised };
 }
 
 /** A reply to request `id`: a message carrying `result` or `error` and no
@@ -279,218 +327,22 @@ function isNotification(
   return (
     typeof message === "object" &&
     message !== null &&
+    (message as { jsonrpc?: unknown }).jsonrpc === "2.0" &&
     typeof (message as { method?: unknown }).method === "string" &&
     !("id" in message)
   );
 }
 
-function isPlainHeaderValue(value: string): boolean {
-  if (value.startsWith("=?base64?") && value.endsWith("?=")) return false;
-  if (value.length === 0) return true;
-  if (
-    value.startsWith(" ") ||
-    value.startsWith("\t") ||
-    value.endsWith(" ") ||
-    value.endsWith("\t")
-  ) {
-    return false;
-  }
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    const ok = code === 0x09 || code === 0x20 || (code >= 0x21 && code <= 0x7e);
-    if (!ok) return false;
-  }
-  return true;
-}
-
-function encodeHeaderValue(value: string): string {
-  if (isPlainHeaderValue(value)) return value;
-  return `=?base64?${Buffer.from(value, "utf8").toString("base64")}?=`;
-}
-
-type HeaderSlot = {
-  path: string[];
-  header: string;
-  type: "string" | "integer" | "boolean";
-};
-
-function mentionsHeader(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(mentionsHeader);
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  if ("x-mcp-header" in record) return true;
-  return Object.values(record).some(mentionsHeader);
-}
-
-/** `undefined` means the tool definition is invalid and must be excluded. */
-function collectHeaders(
-  schema: Record<string, unknown>,
-  toolName: string,
-): HeaderSlot[] | undefined {
-  const slots: HeaderSlot[] = [];
-  const seen = new Set<string>();
-  const reject = (reason: string): undefined => {
-    console.warn(`excluding MCP tool ${toolName}: ${reason}`);
+function collectHeaders(schema: Record<string, unknown>, toolName: string) {
+  try {
+    return collectHeaderSlots(schema);
+  } catch (cause) {
+    console.warn(
+      `excluding MCP tool ${toolName}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
     return undefined;
-  };
-  if ("x-mcp-header" in schema) {
-    return reject("x-mcp-header is not on a property");
   }
-
-  const visit = (node: unknown, path: string[]): boolean => {
-    if (typeof node !== "object" || node === null || Array.isArray(node)) {
-      return true;
-    }
-    const record = node as Record<string, unknown>;
-    if ("x-mcp-header" in record) {
-      const header = record["x-mcp-header"];
-      const schemaType = record["type"];
-      if (typeof header !== "string" || !TCHAR.test(header)) {
-        reject(`invalid x-mcp-header on ${path.join(".")}`);
-        return false;
-      }
-      const id = header.toLowerCase();
-      if (seen.has(id)) {
-        reject(`duplicate x-mcp-header "${header}"`);
-        return false;
-      }
-      if (
-        schemaType !== "string" &&
-        schemaType !== "integer" &&
-        schemaType !== "boolean"
-      ) {
-        reject(`x-mcp-header on non-primitive ${path.join(".")}`);
-        return false;
-      }
-      seen.add(id);
-      slots.push({ path, header, type: schemaType });
-    }
-    const nested = record["properties"];
-    if (
-      typeof nested === "object" &&
-      nested !== null &&
-      !Array.isArray(nested)
-    ) {
-      for (const [key, value] of Object.entries(nested)) {
-        if (!visit(value, [...path, key])) return false;
-      }
-    }
-    for (const [key, value] of Object.entries(record)) {
-      if (key === "properties" || key === "x-mcp-header") continue;
-      if (mentionsHeader(value)) {
-        reject(`x-mcp-header on ${path.join(".")} is not statically reachable`);
-        return false;
-      }
-    }
-    return true;
-  };
-
-  const properties = schema["properties"];
-  if (
-    typeof properties === "object" &&
-    properties !== null &&
-    !Array.isArray(properties)
-  ) {
-    for (const [key, value] of Object.entries(properties)) {
-      if (!visit(value, [key])) return undefined;
-    }
-  }
-  for (const [key, value] of Object.entries(schema)) {
-    if (key === "properties") continue;
-    if (mentionsHeader(value)) {
-      return reject(
-        "x-mcp-header is not statically reachable from the schema root",
-      );
-    }
-  }
-  return slots;
 }
-
-function valueAt(args: Record<string, unknown>, path: string[]): unknown {
-  let current: unknown = args;
-  for (const key of path) {
-    if (
-      typeof current !== "object" ||
-      current === null ||
-      Array.isArray(current)
-    ) {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[key];
-  }
-  return current;
-}
-
-function paramHeaders(
-  schema: Record<string, unknown> | undefined,
-  args: unknown,
-  toolName: string,
-): Record<string, string> {
-  if (schema === undefined) return {};
-  const slots = collectHeaders(schema, toolName);
-  if (slots === undefined) {
-    throw new McpError(
-      `MCP tool ${toolName} has an invalid x-mcp-header annotation`,
-    );
-  }
-  if (typeof args !== "object" || args === null || Array.isArray(args))
-    return {};
-  const headers: Record<string, string> = {};
-  for (const slot of slots) {
-    const value = valueAt(args as Record<string, unknown>, slot.path);
-    if (value === undefined || value === null) continue;
-    headers[`Mcp-Param-${slot.header}`] = encodeParam(slot, value, toolName);
-  }
-  return headers;
-}
-
-function encodeParam(
-  slot: HeaderSlot,
-  value: unknown,
-  toolName: string,
-): string {
-  if (slot.type === "string") {
-    if (typeof value !== "string") {
-      throw new McpError(
-        `MCP tool ${toolName} argument ${slot.path.join(".")} is not a string`,
-      );
-    }
-    return encodeHeaderValue(value);
-  }
-  if (slot.type === "boolean") {
-    if (typeof value !== "boolean") {
-      throw new McpError(
-        `MCP tool ${toolName} argument ${slot.path.join(".")} is not a boolean`,
-      );
-    }
-    return value ? "true" : "false";
-  }
-  if (
-    typeof value !== "number" ||
-    !Number.isInteger(value) ||
-    !Number.isSafeInteger(value)
-  ) {
-    throw new McpError(
-      `MCP tool ${toolName} argument ${slot.path.join(".")} is not a safe integer`,
-    );
-  }
-  return String(value);
-}
-
-function mcpNameFor(
-  method: string,
-  params: Record<string, unknown> | undefined,
-): string | undefined {
-  if (params === undefined) return undefined;
-  if (method === "tools/call" || method === "prompts/get") {
-    return typeof params.name === "string" ? params.name : undefined;
-  }
-  if (method === "resources/read") {
-    return typeof params.uri === "string" ? params.uri : undefined;
-  }
-  return undefined;
-}
-
 function requestHeaders(
   opts: McpClientOptions,
   method: string,
@@ -517,21 +369,45 @@ function requestHeaders(
   return headers;
 }
 
+function progressParams(
+  params: Record<string, unknown> | undefined,
+  opts: McpClientOptions,
+  id: number,
+): Record<string, unknown> {
+  const metadata =
+    params?._meta === undefined ? {} : record(params._meta, "request _meta");
+  const token =
+    opts.progressToken !== undefined
+      ? opts.progressToken
+      : (metadata.progressToken ??
+        (opts.onProgress !== undefined ? id : undefined));
+  if (Object.hasOwn(metadata, "progressToken"))
+    validateProgressToken(metadata.progressToken);
+  if (token !== undefined) validateProgressToken(token);
+  return {
+    ...params,
+    _meta: {
+      ...metadata,
+      ...(token !== undefined ? { progressToken: token } : {}),
+    },
+  };
+}
+
 function modernParams(
   params: Record<string, unknown> | undefined,
   opts: McpClientOptions,
   id: number,
 ): Record<string, unknown> {
-  const progressToken =
-    opts.progressToken ?? (opts.onProgress !== undefined ? id : undefined);
-  const meta: Record<string, unknown> = {
-    [META_PROTOCOL]: MCP_PROTOCOL_VERSION,
-    [META_CLIENT_INFO]: CLIENT_INFO,
-    [META_CLIENT_CAPABILITIES]: clientCapabilities(opts),
+  const base = progressParams(params, opts, id);
+  return {
+    ...base,
+    _meta: {
+      ...record(base._meta),
+      [META_PROTOCOL]: MCP_PROTOCOL_VERSION,
+      [META_CLIENT_INFO]: CLIENT_INFO,
+      [META_CLIENT_CAPABILITIES]: clientCapabilities(opts),
+    },
   };
-  if (progressToken !== undefined) meta.progressToken = progressToken;
-  const base = params ?? {};
-  return { ...base, _meta: meta };
 }
 
 function stripMeta(
@@ -563,25 +439,26 @@ function deliverProgress(
   message: unknown,
   token: string | number | undefined,
   onProgress: ((progress: McpProgress) => void) | undefined,
-): void {
-  if (
-    token === undefined ||
-    onProgress === undefined ||
-    !isNotification(message)
-  ) {
-    return;
+  previous: number | undefined,
+): number | undefined {
+  if (token === undefined || !isNotification(message)) {
+    return previous;
   }
-  if (message.method !== "notifications/progress") return;
+  if (message.method !== "notifications/progress") return previous;
   const params = message.params;
-  if (params === undefined || params.progressToken !== token) return;
-  if (typeof params.progress !== "number") return;
+  if (params === undefined || params.progressToken !== token) return previous;
+  validateNotification("notifications/progress", params);
+  if (typeof params.progress !== "number") return previous;
   const progress: McpProgress = {
     progressToken: token,
     progress: params.progress,
   };
   if (typeof params.total === "number") progress.total = params.total;
   if (typeof params.message === "string") progress.message = params.message;
-  onProgress(progress);
+  if (previous !== undefined && progress.progress <= previous)
+    throw new McpError("progress must strictly increase");
+  onProgress?.(progress);
+  return progress.progress;
 }
 
 /**
@@ -598,18 +475,29 @@ async function sendRequest(
   params: Record<string, unknown> | undefined,
   opts: McpClientOptions,
 ): Promise<{ result: unknown; sessionId: string | undefined }> {
+  if (
+    method === "resources/read" &&
+    opts.maxDecodedBytes !== undefined &&
+    (!Number.isSafeInteger(opts.maxDecodedBytes) || opts.maxDecodedBytes < 0)
+  )
+    throw new McpError("maxDecodedBytes must be a nonnegative safe integer");
   const fetchImpl = opts.fetch ?? fetch;
   const id = nextId++;
-  const timeout =
-    opts.timeoutMs === undefined
-      ? undefined
-      : AbortSignal.timeout(opts.timeoutMs);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeout = AbortSignal.timeout(timeoutMs);
   const signals = [timeout, opts.signal].filter((s) => s !== undefined);
   const signal = signals.length > 0 ? AbortSignal.any(signals) : undefined;
   const modern = isModernSession(opts.session);
-  const bodyParams = modern ? modernParams(params, opts, id) : params;
-  const progressToken =
-    opts.progressToken ?? (opts.onProgress !== undefined ? id : undefined);
+  const bodyParams = modern
+    ? modernParams(params, opts, id)
+    : progressParams(params, opts, id);
+  if (method !== "initialize")
+    validateRequest(method, bodyParams, validationContext(opts));
+  const progressToken = record(bodyParams._meta).progressToken as
+    | string
+    | number
+    | undefined;
+  let previousProgress: number | undefined;
   const extra =
     method === "tools/call"
       ? paramHeaders(
@@ -631,7 +519,8 @@ async function sendRequest(
       },
     ).catch(() => undefined);
   };
-  if (opts.signal !== undefined) {
+  reserveProgressToken(progressToken);
+  if (!modern && method !== "initialize" && opts.signal !== undefined) {
     opts.signal.addEventListener("abort", notifyCancel, { once: true });
   }
   try {
@@ -653,11 +542,29 @@ async function sendRequest(
 
     sessionId = response.headers.get("mcp-session-id") ?? undefined;
     const contentType = response.headers.get("content-type") ?? "";
+    const budget =
+      method === "resources/read" && opts.maxDecodedBytes !== undefined
+        ? createResourceBudget(
+            opts.maxDecodedBytes,
+            contentType.includes("text/event-stream"),
+          )
+        : undefined;
     message = contentType.includes("text/event-stream")
-      ? await readSseJsonRpc(response, id, signal, (frame) => {
-          deliverProgress(frame, progressToken, opts.onProgress);
-        })
-      : parseJson(await readCapped(response, signal));
+      ? await readSseJsonRpc(
+          response,
+          id,
+          signal,
+          (frame) => {
+            previousProgress = deliverProgress(
+              frame,
+              progressToken,
+              opts.onProgress,
+              previousProgress,
+            );
+          },
+          budget,
+        )
+      : parseJson(await readCapped(response, signal, budget));
   } catch (cause) {
     if (opts.signal?.aborted === true) {
       throw new McpError(
@@ -672,7 +579,7 @@ async function sendRequest(
     }
     if (timeout?.aborted === true) {
       throw new McpError(
-        `MCP server ${url} did not answer ${method} within ${String(opts.timeoutMs)}ms`,
+        `MCP server ${url} did not answer ${method} within ${String(timeoutMs)}ms`,
         undefined,
         undefined,
         undefined,
@@ -682,22 +589,35 @@ async function sendRequest(
     throw cause;
   } finally {
     opts.signal?.removeEventListener("abort", notifyCancel);
+    if (progressToken !== undefined) activeProgressTokens.delete(progressToken);
   }
 
   const parsed = JsonRpcResponse(message);
-  if (!(parsed instanceof type.errors) && parsed.error !== undefined) {
+  if (
+    parsed instanceof type.errors ||
+    !isResponseTo(message, id) ||
+    (parsed.error !== undefined && Object.hasOwn(parsed, "result"))
+  ) {
+    throw new McpError(
+      `MCP server ${url} sent a malformed response to ${method}`,
+    );
+  }
+  if (parsed.error !== undefined) {
     throw new McpError(
       `MCP server ${url} rejected ${method}: ${parsed.error.message}`,
       undefined,
       parsed.error.code,
       parsed.error.data,
+      { source: "peer" },
     );
   }
-  if (parsed instanceof type.errors || !isResponseTo(message, id)) {
-    throw new McpError(
-      `MCP server ${url} sent a malformed response to ${method}${parsed instanceof type.errors ? `: ${parsed.summary}` : ""}`,
-    );
-  }
+  if (method !== "initialize")
+    validateResult(method, parsed.result, {
+      ...validationContext(opts),
+      // Never accept a caller-supplied validation context as proof of a wire budget.
+      maxDecodedBytes:
+        method === "resources/read" ? opts.maxDecodedBytes : undefined,
+    });
   return { result: parsed.result, sessionId };
 }
 
@@ -709,10 +629,8 @@ async function sendNotification(
   params?: Record<string, unknown>,
 ): Promise<void> {
   const fetchImpl = opts.fetch ?? fetch;
-  const timeout =
-    opts.timeoutMs === undefined
-      ? undefined
-      : AbortSignal.timeout(opts.timeoutMs);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeout = AbortSignal.timeout(timeoutMs);
   const modern = isModernSession(opts.session);
   const bodyParams =
     params === undefined
@@ -759,6 +677,17 @@ async function errorFrom(
   method: string,
   signal: AbortSignal | undefined,
 ): Promise<McpError> {
+  if (response.status === 401 || response.status === 403) {
+    void response.body?.cancel().catch(() => undefined);
+    const challenge = response.headers.get("www-authenticate");
+    return new McpError(
+      `MCP server ${url} responded ${response.status} to ${method}`,
+      response.status,
+      undefined,
+      undefined,
+      challenge === null ? undefined : { wwwAuthenticate: challenge },
+    );
+  }
   let code: number | undefined;
   let data: unknown;
   let detail: string | undefined;
@@ -798,7 +727,9 @@ async function errorFrom(
     detail === undefined
       ? `MCP server ${url} responded ${response.status} to ${method}`
       : `MCP server ${url} rejected ${method}: ${detail}`;
-  return new McpError(message, response.status, code, data);
+  return new McpError(message, response.status, code, data, {
+    source: code === undefined ? "local" : "peer",
+  });
 }
 
 function parseJson(text: string): unknown {
@@ -819,7 +750,9 @@ function overflow(): McpError {
 async function* chunks(
   response: Response,
   signal: AbortSignal | undefined,
+  budget?: ResourceBudget,
 ): AsyncGenerator<Uint8Array> {
+  signal?.throwIfAborted();
   const body = response.body;
   if (body === null) {
     throw new McpError("MCP server sent a response with no body");
@@ -830,7 +763,11 @@ async function* chunks(
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) return;
+      if (done) {
+        budget?.finish();
+        return;
+      }
+      budget?.push(value);
       yield value;
     }
   } finally {
@@ -842,13 +779,14 @@ async function* chunks(
 async function readCapped(
   response: Response,
   signal: AbortSignal | undefined,
+  budget?: ResourceBudget,
 ): Promise<string> {
   const decoder = new TextDecoder();
   let text = "";
   let bytes = 0;
-  for await (const chunk of chunks(response, signal)) {
+  for await (const chunk of chunks(response, signal, budget)) {
     bytes += chunk.byteLength;
-    if (bytes > MAX_MESSAGE_BYTES) throw overflow();
+    if (budget === undefined && bytes > MAX_MESSAGE_BYTES) throw overflow();
     text += decoder.decode(chunk, { stream: true });
   }
   return text + decoder.decode();
@@ -857,16 +795,19 @@ async function readCapped(
 async function* sseMessages(
   response: Response,
   signal: AbortSignal | undefined,
+  budget?: ResourceBudget,
 ): AsyncGenerator<unknown> {
   const decoder = new TextDecoder();
   let buffer = "";
-  for await (const chunk of chunks(response, signal)) {
+  for await (const chunk of chunks(response, signal, budget)) {
     buffer += decoder.decode(chunk, { stream: true });
     const frames = buffer.split(/\r\n\r\n|\n\n|\r\r/);
     buffer = frames.pop() ?? "";
-    if (buffer.length > MAX_MESSAGE_BYTES) throw overflow();
+    if (budget === undefined && buffer.length > MAX_MESSAGE_BYTES)
+      throw overflow();
     for (const frame of frames) {
-      if (frame.length > MAX_MESSAGE_BYTES) throw overflow();
+      if (budget === undefined && frame.length > MAX_MESSAGE_BYTES)
+        throw overflow();
       const dataLines = frame
         .split(/\r\n|\r|\n/)
         .filter((line) => line.startsWith("data:"))
@@ -887,8 +828,9 @@ async function readSseJsonRpc(
   id: number,
   signal: AbortSignal | undefined,
   onMessage: (message: unknown) => void,
+  budget?: ResourceBudget,
 ): Promise<unknown> {
-  for await (const candidate of sseMessages(response, signal)) {
+  for await (const candidate of sseMessages(response, signal, budget)) {
     if (isResponseTo(candidate, id)) return candidate;
     onMessage(candidate);
   }
@@ -982,13 +924,6 @@ async function initializeLegacy(
   return session;
 }
 
-const DiscoverResult = type({
-  supportedVersions: "string[]",
-  capabilities: "Record<string, unknown>",
-  "instructions?": "string",
-  "_meta?": "Record<string, unknown>",
-});
-
 function supportedFrom(data: unknown): string[] {
   if (typeof data !== "object" || data === null) return [];
   const supported = (data as { supported?: unknown }).supported;
@@ -1004,6 +939,12 @@ function legacyVersion(supported: readonly string[]): string | undefined {
 
 function shouldFallback(error: unknown): boolean {
   if (!(error instanceof McpError)) return false;
+  if (
+    error.status !== undefined &&
+    error.status !== 400 &&
+    error.status !== 404
+  )
+    return false;
   if (error.cancelled) return false;
   if (error.timedOut) return true;
   // Streamable HTTP backward compatibility: inspect HTTP 400 bodies before
@@ -1090,7 +1031,10 @@ export async function mcpConnect(
   } catch (cause) {
     if (
       cause instanceof McpError &&
-      cause.code === McpErrorCode.UnsupportedProtocolVersion
+      cause.code === McpErrorCode.UnsupportedProtocolVersion &&
+      (cause.status === undefined ||
+        cause.status === 400 ||
+        cause.status === 404)
     ) {
       const legacy = legacyVersion(supportedFrom(cause.data));
       if (legacy !== undefined) return initializeLegacy(url, opts, legacy);
@@ -1131,7 +1075,11 @@ function parseInputRequired(
       `MCP server ${url} sent a malformed input_required result`,
     );
   }
-  const record = result as { inputRequests?: unknown; requestState?: unknown };
+  const record = result as {
+    inputRequests?: unknown;
+    requestState?: unknown;
+    _meta?: Record<string, unknown>;
+  };
   if (record.inputRequests === undefined && record.requestState === undefined) {
     throw new McpError(
       `MCP server ${url} sent an input_required result with neither inputRequests nor requestState`,
@@ -1167,6 +1115,7 @@ function parseInputRequired(
     resultType: "input_required",
     method,
     params: stripMeta(params),
+    ...(record._meta !== undefined ? { _meta: record._meta } : {}),
     ...(record.inputRequests !== undefined
       ? { inputRequests: record.inputRequests as Record<string, unknown> }
       : {}),
@@ -1175,17 +1124,6 @@ function parseInputRequired(
       : {}),
   };
 }
-
-const TaskHandleSchema = type({
-  taskId: "string",
-  status: "'working' | 'input_required' | 'completed' | 'failed' | 'cancelled'",
-  createdAt: "string",
-  lastUpdatedAt: "string",
-  ttlMs: "number | null",
-  "pollIntervalMs?": "number",
-  "statusMessage?": "string",
-  "_meta?": "Record<string, unknown>",
-});
 
 function parseTask(result: unknown, url: string): McpTaskHandle {
   const parsed = TaskHandleSchema(result);
@@ -1203,29 +1141,14 @@ async function requestResult(
   params: Record<string, unknown> | undefined,
   opts: McpClientOptions,
 ): Promise<unknown> {
-  const callOpts = opts.session === undefined ? asModern(opts) : opts;
-  const { result } = await sendRequest(url, method, params, callOpts);
+  const result = await createMcpRequestTransport(url, opts).request(
+    method,
+    params,
+  );
   const kind = resultKind(result);
-  if (kind === "invalid") {
-    throw new McpError(
-      `MCP server ${url} sent an unrecognized resultType for ${method}`,
-    );
-  }
-  if (kind === "input_required" || kind === "task") {
-    if (!ROUND_TRIP_METHODS.has(method)) {
-      throw new McpError(
-        `MCP server ${url} sent ${kind} for ${method}, which does not accept it`,
-      );
-    }
-    if (kind === "task" && !enabledExtensions(opts).includes(MCP_EXT_TASKS)) {
-      throw new McpError(
-        `MCP server ${url} sent a task result but ${MCP_EXT_TASKS} is not enabled`,
-      );
-    }
-    return kind === "task"
-      ? parseTask(result, url)
-      : parseInputRequired(method, params, result, url);
-  }
+  if (kind === "task") return parseTask(result, url);
+  if (kind === "input_required")
+    return parseInputRequired(method, params, result, url);
   return result;
 }
 
@@ -1397,13 +1320,6 @@ export async function mcpListTools(
   return attachCache(tools, cache);
 }
 
-const ToolCallResult = type({
-  content: "unknown",
-  "isError?": "boolean",
-  "structuredContent?": "unknown",
-  "_meta?": "Record<string, unknown>",
-});
-
 /** `tools/call`: invoke a remote tool by name with JSON arguments. */
 export async function mcpCallTool(
   url: string,
@@ -1492,26 +1408,8 @@ async function continueMethod<T>(
   return complete(result);
 }
 
-const PromptSchema = type({
-  name: "string",
-  "title?": "string",
-  "description?": "string",
-  "arguments?": type({
-    name: "string",
-    "description?": "string",
-    "required?": "boolean",
-  }).array(),
-  "icons?": "unknown[]",
-  "_meta?": "Record<string, unknown>",
-});
 export type McpPrompt = typeof PromptSchema.infer;
 export type McpPromptList = McpPrompt[] & PageCache;
-
-const PromptResult = type({
-  "description?": "string",
-  messages: "unknown[]",
-  "_meta?": "Record<string, unknown>",
-});
 
 export type McpPromptResult =
   | {
@@ -1573,28 +1471,9 @@ export async function mcpGetPrompt(
   });
 }
 
-const ResourceSchema = type({
-  uri: "string",
-  name: "string",
-  "title?": "string",
-  "description?": "string",
-  "mimeType?": "string",
-  "annotations?": "Record<string, unknown>",
-  "icons?": "unknown[]",
-  "_meta?": "Record<string, unknown>",
-});
 export type McpResource = typeof ResourceSchema.infer;
 export type McpResourceList = McpResource[] & PageCache;
 
-const TemplateSchema = type({
-  uriTemplate: "string",
-  name: "string",
-  "title?": "string",
-  "description?": "string",
-  "mimeType?": "string",
-  "annotations?": "Record<string, unknown>",
-  "_meta?": "Record<string, unknown>",
-});
 export type McpResourceTemplate = typeof TemplateSchema.infer;
 export type McpResourceTemplateList = McpResourceTemplate[] & PageCache;
 
@@ -1602,6 +1481,7 @@ export type McpResourceReadResult =
   | {
       resultType: "complete";
       contents: unknown[];
+      _meta?: Record<string, unknown>;
       ttlMs?: number;
       cacheScope?: McpCacheScope;
     }
@@ -1609,7 +1489,10 @@ export type McpResourceReadResult =
   | McpTaskHandle;
 
 function completeRead(result: unknown, url: string): McpResourceReadResult {
-  const parsed = type({ contents: "unknown[]" })(result);
+  const parsed = type({
+    contents: "unknown[]",
+    "_meta?": "Record<string, unknown>",
+  })(result);
   if (parsed instanceof type.errors) {
     throw new McpError(
       `MCP server ${url} sent a malformed resources/read result: ${parsed.summary}`,
@@ -1619,6 +1502,7 @@ function completeRead(result: unknown, url: string): McpResourceReadResult {
   return {
     resultType: "complete",
     contents: parsed.contents,
+    ...(parsed._meta !== undefined ? { _meta: parsed._meta } : {}),
     ...(cache.ttlMs !== undefined ? { ttlMs: cache.ttlMs } : {}),
     ...(cache.cacheScope !== undefined ? { cacheScope: cache.cacheScope } : {}),
   };
@@ -1683,13 +1567,6 @@ export async function mcpListResourceTemplates(
   return attachCache(templates, cache);
 }
 
-const CompletionResult = type({
-  completion: {
-    values: "string[]",
-    "total?": "number",
-    "hasMore?": "boolean",
-  },
-});
 export type McpCompletion = typeof CompletionResult.infer;
 
 export type McpCompletionRef =
@@ -1721,15 +1598,6 @@ export async function mcpComplete(
   }
   return parsed;
 }
-
-export type McpSubscriptionFilter = {
-  toolsListChanged?: boolean;
-  promptsListChanged?: boolean;
-  resourcesListChanged?: boolean;
-  resourceSubscriptions?: readonly string[];
-  /** Requires `io.modelcontextprotocol/tasks`. */
-  taskIds?: readonly string[];
-};
 
 export type McpNotification = {
   method: string;
@@ -1800,8 +1668,8 @@ function asNotification(message: {
 
 /**
  * `subscriptions/listen`. Resolves when the server closes the stream with a
- * result, or rejects when `signal` aborts (the stream is closed and
- * `notifications/cancelled` is sent).
+ * result after acknowledgement, or rejects when `signal` aborts and closes
+ * the stream. Long-lived by default; timeoutMs explicitly bounds its lifetime.
  */
 export async function mcpListen(
   url: string,
@@ -1813,26 +1681,23 @@ export async function mcpListen(
   const callOpts = asModern(opts);
   const fetchImpl = callOpts.fetch ?? fetch;
   const id = nextId++;
+  const bodyParams = modernParams(subscriptionParams(filter), callOpts, id);
+  validateRequest(
+    "subscriptions/listen",
+    bodyParams,
+    validationContext(callOpts),
+  );
+  const progressToken = record(bodyParams._meta).progressToken as
+    | string
+    | number
+    | undefined;
   const timeout =
     callOpts.timeoutMs === undefined
       ? undefined
       : AbortSignal.timeout(callOpts.timeoutMs);
   const signals = [timeout, opts.signal].filter((s) => s !== undefined);
   const signal = signals.length > 0 ? AbortSignal.any(signals) : undefined;
-  const notifyCancel = () => {
-    void sendNotification(
-      url,
-      "notifications/cancelled",
-      cancellationOpts(callOpts),
-      {
-        requestId: id,
-        reason: "the caller aborted the request",
-      },
-    ).catch(() => undefined);
-  };
-  if (opts.signal !== undefined) {
-    opts.signal.addEventListener("abort", notifyCancel, { once: true });
-  }
+  reserveProgressToken(progressToken);
   try {
     const response = await fetchImpl(url, {
       method: "POST",
@@ -1841,28 +1706,44 @@ export async function mcpListen(
         jsonrpc: "2.0",
         id,
         method: "subscriptions/listen",
-        params: modernParams(subscriptionParams(filter), callOpts, id),
+        params: bodyParams,
       }),
       ...(signal !== undefined ? { signal } : {}),
     });
     if (!response.ok)
       throw await errorFrom(response, url, "subscriptions/listen", signal);
     const contentType = response.headers.get("content-type") ?? "";
+    let acknowledged: Record<string, unknown> | undefined;
     const finish = (message: unknown): void => {
       const parsed = JsonRpcResponse(message);
-      if (!(parsed instanceof type.errors) && parsed.error !== undefined) {
+      if (
+        parsed instanceof type.errors ||
+        !isResponseTo(message, id) ||
+        (parsed.error !== undefined && Object.hasOwn(parsed, "result"))
+      ) {
+        throw new McpError(
+          `MCP server ${url} sent a malformed response to subscriptions/listen`,
+        );
+      }
+      if (parsed.error !== undefined) {
         throw new McpError(
           `MCP server ${url} rejected subscriptions/listen: ${parsed.error.message}`,
           undefined,
           parsed.error.code,
           parsed.error.data,
+          { source: "peer" },
         );
       }
-      if (parsed instanceof type.errors || !isResponseTo(message, id)) {
-        throw new McpError(
-          `MCP server ${url} sent a malformed response to subscriptions/listen`,
-        );
-      }
+      if (acknowledged === undefined)
+        throw new McpError("subscription result preceded acknowledgement");
+      const result = validateResult(
+        "subscriptions/listen",
+        parsed.result,
+        validationContext(callOpts),
+      );
+      const metadata = result._meta as Record<string, unknown> | undefined;
+      if (metadata?.[META_SUBSCRIPTION] !== id)
+        throw new McpError("subscription result has mismatched subscriptionId");
     };
     if (!contentType.includes("text/event-stream")) {
       finish(parseJson(await readCapped(response, signal)));
@@ -1870,7 +1751,62 @@ export async function mcpListen(
     }
     for await (const message of sseMessages(response, signal)) {
       if (isNotification(message)) {
-        onNotification(asNotification(message));
+        validateNotification(
+          message.method,
+          message.params,
+          validationContext(callOpts),
+        );
+        const notification = asNotification(message);
+        if (notification.subscriptionId !== id)
+          throw new McpError(
+            "subscription notification has mismatched subscriptionId",
+          );
+        if (message.method === "notifications/subscriptions/acknowledged") {
+          if (acknowledged !== undefined)
+            throw new McpError("duplicate subscription acknowledgement");
+          acknowledged = message.params?.notifications as Record<
+            string,
+            unknown
+          >;
+          for (const [key, value] of Object.entries(acknowledged)) {
+            const requested = (filter as Record<string, unknown>)[key];
+            if (
+              Array.isArray(value)
+                ? !Array.isArray(requested) ||
+                  value.some((item) => !requested.includes(item))
+                : value === true && requested !== true
+            )
+              throw new McpError(
+                "subscription acknowledged an unrequested filter",
+              );
+          }
+        } else {
+          if (acknowledged === undefined)
+            throw new McpError(
+              "subscription notification preceded acknowledgement",
+            );
+          const keys: Record<string, string> = {
+            "notifications/tools/list_changed": "toolsListChanged",
+            "notifications/prompts/list_changed": "promptsListChanged",
+            "notifications/resources/list_changed": "resourcesListChanged",
+          };
+          const key = keys[message.method];
+          const allowed =
+            key !== undefined
+              ? acknowledged[key] === true
+              : message.method === "notifications/resources/updated"
+                ? Array.isArray(acknowledged.resourceSubscriptions) &&
+                  acknowledged.resourceSubscriptions.includes(
+                    message.params?.uri,
+                  )
+                : message.method === "notifications/tasks"
+                  ? Array.isArray(acknowledged.taskIds) &&
+                    acknowledged.taskIds.includes(message.params?.taskId)
+                  : false;
+          if (!allowed)
+            throw new McpError("unrequested subscription notification");
+        }
+        onNotification(notification);
         continue;
       }
       if (isResponseTo(message, id)) {
@@ -1902,48 +1838,16 @@ export async function mcpListen(
     }
     throw cause;
   } finally {
-    opts.signal?.removeEventListener("abort", notifyCancel);
+    if (progressToken !== undefined) activeProgressTokens.delete(progressToken);
   }
 }
 
-const TaskStateSchema = type({
-  taskId: "string",
-  status: "'working' | 'input_required' | 'completed' | 'failed' | 'cancelled'",
-  createdAt: "string",
-  lastUpdatedAt: "string",
-  ttlMs: "number | null",
-  "pollIntervalMs?": "number",
-  "statusMessage?": "string",
-  "inputRequests?": "Record<string, unknown>",
-  "result?": "Record<string, unknown>",
-  "error?": { code: "number", message: "string", "data?": "unknown" },
-  "_meta?": "Record<string, unknown>",
-});
-
-function parseTaskState(result: unknown, url: string, method: string): McpTask {
-  const parsed = TaskStateSchema(result);
-  if (parsed instanceof type.errors) {
-    throw new McpError(
-      `MCP server ${url} sent a malformed ${method} result: ${parsed.summary}`,
-    );
-  }
-  if (
-    parsed.status === "input_required" &&
-    parsed.inputRequests === undefined
-  ) {
-    throw new McpError(
-      `MCP server ${url} sent an input_required task without inputRequests`,
-    );
-  }
-  if (parsed.status === "completed" && parsed.result === undefined) {
-    throw new McpError(
-      `MCP server ${url} sent a completed task without a result`,
-    );
-  }
-  if (parsed.status === "failed" && parsed.error === undefined) {
-    throw new McpError(`MCP server ${url} sent a failed task without an error`);
-  }
-  return { resultType: "complete", ...parsed };
+function parseTaskState(
+  result: unknown,
+  _url: string,
+  _method: string,
+): McpTask {
+  return { ...validateTask(result, true), resultType: "complete" };
 }
 
 /** `tasks/get`. Requires the tasks extension. */
@@ -2008,16 +1912,21 @@ export async function mcpCancelTask(
   }
 }
 
-const SkillSchema = type({
-  uri: "string",
-  frontmatter: "Record<string, unknown>",
-  resources: "unknown",
-});
 export type McpSkill = typeof SkillSchema.infer;
 export type McpSkillList = McpSkill[] & PageCache;
 
 function requireSkills(opts: McpClientOptions): void {
   requireExtension(opts, MCP_EXT_SKILLS);
+  const extensions = opts.session?.capabilities?.extensions;
+  if (
+    typeof extensions !== "object" ||
+    extensions === null ||
+    !Object.hasOwn(extensions, MCP_EXT_SKILLS)
+  ) {
+    throw new McpError(
+      "server has not declared the skills extension; discover before calling skills methods",
+    );
+  }
 }
 
 /** `skills/list`, following cursors. Requires the skills extension. */

@@ -30,7 +30,7 @@ describe("mcpInitialize / mcpListTools / mcpCallTool over JSON", () => {
     expect(result.resultType).toBe("complete");
     if (result.resultType !== "complete")
       throw new Error("expected a complete result");
-    expect(result.content).toBe("hi");
+    expect(result.content).toEqual([{ type: "text", text: "hi" }]);
   });
 
   test("a resolved tools/call result keeps the previous McpToolResult contract", async () => {
@@ -40,7 +40,7 @@ describe("mcpInitialize / mcpListTools / mcpCallTool over JSON", () => {
     if (result.resultType === "input_required" || result.resultType === "task")
       throw new Error("expected a complete result");
     const resolved: McpToolResult = result;
-    expect(resolved.content).toBe("hi");
+    expect(resolved.content).toEqual([{ type: "text", text: "hi" }]);
     expect(resolved.isError).toBeUndefined();
   });
 
@@ -376,7 +376,7 @@ describe("tools/list", () => {
         const parsed = RequestIdOnly(await req.json());
         if (parsed instanceof type.errors)
           return new Response("", { status: 400 });
-        const tool = { name: "dup", inputSchema: {} };
+        const tool = { name: "dup", inputSchema: { type: "object" } };
         return Response.json({
           jsonrpc: "2.0",
           id: parsed.id,

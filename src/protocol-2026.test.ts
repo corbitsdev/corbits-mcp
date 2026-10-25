@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import {
   MCP_EXT_SKILLS,
@@ -158,7 +158,10 @@ describe("MCP 2026-07-28", () => {
       }
       if (seen.method === "tools/list") return rpc(seen.body.id, { tools: [] });
       if (seen.method === "tools/call") {
-        return rpc(seen.body.id, { resultType: "complete", content: "plain" });
+        return rpc(seen.body.id, {
+          resultType: "complete",
+          content: [{ type: "text", text: "plain" }],
+        });
       }
       return rpcError(seen.body.id, McpErrorCode.MethodNotFound, "no");
     });
@@ -169,7 +172,7 @@ describe("MCP 2026-07-28", () => {
       expect(result.resultType).toBe("complete");
       if (result.resultType !== "complete")
         throw new Error("expected a complete result");
-      expect(result.content).toBe("plain");
+      expect(result.content).toEqual([{ type: "text", text: "plain" }]);
 
       for (const seen of srv.seen) {
         expect(seen.headers.get("MCP-Protocol-Version")).toBe(
@@ -287,7 +290,7 @@ describe("MCP 2026-07-28", () => {
         if (seen.method === "notifications/initialized")
           return new Response(null, { status: 202 });
         return rpc(seen.body.id, {
-          tools: [{ name: "echo", inputSchema: {} }],
+          tools: [{ name: "echo", inputSchema: { type: "object" } }],
         });
       });
       try {
@@ -447,35 +450,55 @@ describe("MCP 2026-07-28", () => {
     let call = 0;
     const srv = jsonServer((seen) => {
       call += 1;
-      if (call === 1) return rpc(seen.body.id, { content: "plain" });
+      if (call === 1)
+        return rpc(seen.body.id, {
+          content: [{ type: "text", text: "plain" }],
+        });
       if (call === 2) {
         return rpc(seen.body.id, {
           resultType: "input_required",
           requestState: "opaque",
           inputRequests: {
-            a: { method: "elicitation/create", message: "name" },
+            a: {
+              method: "elicitation/create",
+              params: {
+                message: "name",
+                requestedSchema: {
+                  type: "object",
+                  properties: { text: { type: "string" } },
+                },
+              },
+            },
           },
         });
       }
-      expect(seen.body.params?.inputResponses).toEqual({ a: { text: "ada" } });
+      expect(seen.body.params?.inputResponses).toEqual({
+        a: { action: "accept", content: { text: "ada" } },
+      });
       expect(seen.body.params?.requestState).toBe("opaque");
       expect(seen.body.params?.name).toBe("echo");
       expect(seen.headers.get("mcp-name")).toBe("echo");
-      return rpc(seen.body.id, { resultType: "complete", content: "ada" });
+      return rpc(seen.body.id, {
+        resultType: "complete",
+        content: [{ type: "text", text: "ada" }],
+      });
     });
     try {
       const first = await mcpCallTool(
         srv.url,
         "echo",
         { text: "hi" },
-        { session: modern },
+        { session: modern, elicitation: { form: true } },
       );
-      expect(first).toMatchObject({ resultType: "complete", content: "plain" });
+      expect(first).toMatchObject({
+        resultType: "complete",
+        content: [{ type: "text", text: "plain" }],
+      });
       const pending = await mcpCallTool(
         srv.url,
         "echo",
         { text: "hi" },
-        { session: modern },
+        { session: modern, elicitation: { form: true } },
       );
       expect(pending.resultType).toBe("input_required");
       if (pending.resultType !== "input_required")
@@ -483,14 +506,15 @@ describe("MCP 2026-07-28", () => {
       const continued = await mcpContinue(
         srv.url,
         pending,
-        { a: { text: "ada" } },
+        { a: { action: "accept", content: { text: "ada" } } },
         {
           session: modern,
+          elicitation: { form: true },
         },
       );
       expect(continued).toMatchObject({
         resultType: "complete",
-        content: "ada",
+        content: [{ type: "text", text: "ada" }],
       });
     } finally {
       srv.stop();
@@ -502,10 +526,24 @@ describe("MCP 2026-07-28", () => {
       let round = 0;
       const srv = jsonServer((seen) => {
         round += 1;
-        if (round === 3) return rpc(seen.body.id, { content: "done" });
+        if (round === 3)
+          return rpc(seen.body.id, {
+            content: [{ type: "text", text: "done" }],
+          });
         return rpc(seen.body.id, {
           resultType: "input_required",
-          inputRequests: { answer: { method: "roots/list" } },
+          inputRequests: {
+            answer: {
+              method: "elicitation/create",
+              params: {
+                message: "answer",
+                requestedSchema: {
+                  type: "object",
+                  properties: { text: { type: "string" } },
+                },
+              },
+            },
+          },
           ...(round === 1
             ? { requestState: "round-one" }
             : nextState === undefined
@@ -514,19 +552,31 @@ describe("MCP 2026-07-28", () => {
         });
       });
       try {
-        const first = await mcpCallTool(srv.url, "echo", { text: "hi" });
+        const first = await mcpCallTool(
+          srv.url,
+          "echo",
+          { text: "hi" },
+          { elicitation: { form: true } },
+        );
         if (first.resultType !== "input_required")
           throw new Error("expected first input");
-        const second = await mcpContinue(srv.url, first, {
-          answer: { roots: [] },
-        });
+        const second = await mcpContinue(
+          srv.url,
+          first,
+          {
+            answer: { action: "accept", content: { text: "first" } },
+          },
+          { elicitation: { form: true } },
+        );
         if (second.resultType !== "input_required")
           throw new Error("expected second input");
-        const responses = { answer: { roots: [{ uri: "file:///latest" }] } };
+        const responses = {
+          answer: { action: "accept", content: { text: "latest" } },
+        };
         const final = await mcpContinue(srv.url, second, responses);
         expect(final).toMatchObject({
           resultType: "complete",
-          content: "done",
+          content: [{ type: "text", text: "done" }],
         });
         expect(srv.seen[1]?.body.params?.requestState).toBe("round-one");
         const last = srv.seen[2];
@@ -639,7 +689,7 @@ describe("MCP 2026-07-28", () => {
         });
       }
       expect(seen.headers.get("mcp-param-note")).toMatch(/^=\?base64\?.+\?=$/);
-      return rpc(seen.body.id, { content: "ok" });
+      return rpc(seen.body.id, { content: [{ type: "text", text: "ok" }] });
     });
     try {
       const tools = await mcpListTools(srv.url, { session: modern });
@@ -653,7 +703,10 @@ describe("MCP 2026-07-28", () => {
         { note: "héllo" },
         { session: modern, inputSchema: good.inputSchema },
       );
-      expect(result).toMatchObject({ resultType: "complete", content: "ok" });
+      expect(result).toMatchObject({
+        resultType: "complete",
+        content: [{ type: "text", text: "ok" }],
+      });
     } finally {
       console.warn = original;
       srv.stop();
@@ -676,7 +729,9 @@ describe("MCP 2026-07-28", () => {
         expect(seen.headers.get("mcp-name")).toBe("greet");
         return rpc(seen.body.id, {
           description: "hi",
-          messages: [{ role: "user" }],
+          messages: [
+            { role: "user", content: { type: "text", text: "Hello" } },
+          ],
         });
       }
       if (seen.method === "resources/list") {
@@ -749,49 +804,76 @@ describe("MCP 2026-07-28", () => {
     }
   });
 
-  test("caller abort sends notifications/cancelled and a timeout does not", async () => {
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const live = jsonServer(async (seen) => {
-      if (seen.body.id === undefined)
-        return new Response(null, { status: 202 });
-      await gate;
-      return rpc(seen.body.id, { content: "late" });
-    });
-    try {
-      const ac = new AbortController();
-      const pending = mcpCallTool(
-        live.url,
-        "echo",
-        {},
-        { session: modern, signal: ac.signal },
+  test("modern caller abort and timeout never send notifications/cancelled", async () => {
+    for (const source of ["caller", "timeout"] as const) {
+      const caller = new AbortController();
+      const deadline = new AbortController();
+      const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(
+        deadline.signal,
       );
-      while (live.seen.length === 0) await Bun.sleep(5);
-      ac.abort();
-      release?.();
-      const failure = await pending.catch((error: unknown) => error);
-      expect(failure).toBeInstanceOf(McpError);
-      expect((failure as McpError).cancelled).toBe(true);
-      for (
-        let i = 0;
-        i < 20 &&
-        !live.seen.some((s) => s.method === "notifications/cancelled");
-        i++
-      ) {
-        await Bun.sleep(10);
+      const methods: string[] = [];
+      let observe!: (signal: AbortSignal) => void;
+      const observed = new Promise<AbortSignal>((resolve) => {
+        observe = resolve;
+      });
+      try {
+        const pending = mcpCallTool(
+          "https://example.test/mcp",
+          "echo",
+          {},
+          {
+            session: modern,
+            signal: caller.signal,
+            timeoutMs: 40,
+            fetch: async (_url, init) => {
+              const body = JSON.parse(String(init?.body)) as RpcBody;
+              methods.push(String(body.method));
+              if (body.method !== "tools/call")
+                return new Response(null, { status: 202 });
+              const signal = init?.signal;
+              if (signal == null)
+                throw new Error("request must propagate its abort signal");
+              return new Promise<Response>((_resolve, reject) => {
+                signal.addEventListener("abort", () => reject(signal.reason), {
+                  once: true,
+                });
+                observe(signal);
+              });
+            },
+          },
+        ).catch((error: unknown) => error);
+        // Start the controlled deadline only after fetch has observed the request.
+        // No socket delivery or wall-clock scheduling assumption is involved.
+        const signal = await observed;
+        expect(timeout).toHaveBeenCalledWith(40);
+        expect(signal.aborted).toBe(false);
+        if (source === "caller") caller.abort();
+        else
+          deadline.abort(
+            new DOMException("controlled deadline", "TimeoutError"),
+          );
+        const failure = await pending;
+        expect(signal.aborted).toBe(true);
+        expect(failure).toBeInstanceOf(McpError);
+        expect(failure).toHaveProperty("cancelled", source === "caller");
+        expect(failure).toHaveProperty("timedOut", source === "timeout");
+        // Records all fetch invocations, including any attempted notification.
+        expect(methods).toEqual(["tools/call"]);
+        expect(timeout).toHaveBeenCalledTimes(1);
+      } finally {
+        caller.abort();
+        deadline.abort();
+        timeout.mockRestore();
       }
-      const note = live.seen.find(
-        (s) => s.method === "notifications/cancelled",
-      );
-      expect(note?.body.params?.reason).toBe("the caller aborted the request");
-      expect(note?.headers.get("mcp-method")).toBe("notifications/cancelled");
-    } finally {
-      live.stop();
     }
+  });
 
-    const stalled = jsonServer(() => new Promise(() => undefined));
+  test("modern timeout before socket delivery does not require server receipt", async () => {
+    const stalled = jsonServer((seen) => rpc(seen.body.id, { content: [] }));
+    const expired = AbortSignal.abort(
+      new DOMException("controlled deadline", "TimeoutError"),
+    );
+    const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(expired);
     try {
       const failure = await mcpCallTool(
         stalled.url,
@@ -802,10 +884,14 @@ describe("MCP 2026-07-28", () => {
           timeoutMs: 40,
         },
       ).catch((error: unknown) => error);
-      expect((failure as McpError).timedOut).toBe(true);
-      await Bun.sleep(30);
-      expect(stalled.seen.map((s) => s.method)).toEqual(["tools/call"]);
+      expect(timeout).toHaveBeenCalledWith(40);
+      expect(failure).toBeInstanceOf(McpError);
+      expect(failure).toHaveProperty("timedOut", true);
+      expect(failure).toHaveProperty("cancelled", false);
+      // A deadline starts before fetch; an expired signal prevents delivery.
+      expect(stalled.seen).toEqual([]);
     } finally {
+      timeout.mockRestore();
       stalled.stop();
     }
   });
@@ -841,7 +927,7 @@ describe("MCP 2026-07-28", () => {
                 `data: ${JSON.stringify({
                   jsonrpc: "2.0",
                   id: body.id,
-                  result: { content: "done" },
+                  result: { content: [{ type: "text", text: "done" }] },
                 })}\n\n`,
               ),
             );
@@ -864,7 +950,10 @@ describe("MCP 2026-07-28", () => {
         },
       );
       expect(progress).toEqual([1]);
-      expect(result).toMatchObject({ resultType: "complete", content: "done" });
+      expect(result).toMatchObject({
+        resultType: "complete",
+        content: [{ type: "text", text: "done" }],
+      });
     } finally {
       void server.stop(true);
     }
@@ -885,6 +974,7 @@ describe("MCP 2026-07-28", () => {
               jsonrpc: "2.0",
               method: "notifications/subscriptions/acknowledged",
               params: {
+                notifications: { toolsListChanged: true },
                 _meta: { "io.modelcontextprotocol/subscriptionId": body.id },
               },
             };
@@ -896,6 +986,11 @@ describe("MCP 2026-07-28", () => {
                 `data: ${JSON.stringify({
                   jsonrpc: "2.0",
                   method: "notifications/tools/list_changed",
+                  params: {
+                    _meta: {
+                      "io.modelcontextprotocol/subscriptionId": body.id,
+                    },
+                  },
                 })}\n\n`,
               ),
             );
@@ -944,7 +1039,7 @@ describe("MCP 2026-07-28", () => {
           });
         }
         return rpc(seen.body.id, {
-          content: "ui",
+          content: [{ type: "text", text: "ui" }],
           _meta: { ui: { resourceUri: "ui://app" } },
         });
       }
@@ -956,7 +1051,7 @@ describe("MCP 2026-07-28", () => {
           createdAt: "2026-07-28T00:00:00Z",
           lastUpdatedAt: "2026-07-28T00:00:01Z",
           ttlMs: null,
-          result: { content: "done" },
+          result: { content: [{ type: "text", text: "done" }] },
         });
       }
       if (seen.method === "tasks/update" || seen.method === "tasks/cancel") {
@@ -967,7 +1062,7 @@ describe("MCP 2026-07-28", () => {
           skills: [
             {
               uri: "skill://a",
-              frontmatter: { name: "a" },
+              frontmatter: { name: "a", description: "A skill" },
               resources: "dynamic",
             },
           ],
@@ -977,8 +1072,8 @@ describe("MCP 2026-07-28", () => {
         return rpc(seen.body.id, {
           skill: {
             uri: "skill://a",
-            frontmatter: { name: "a" },
-            resources: [],
+            frontmatter: { name: "a", description: "A skill" },
+            resources: "dynamic",
           },
         });
       }
@@ -1029,7 +1124,7 @@ describe("MCP 2026-07-28", () => {
       await mcpUpdateTask(
         srv.url,
         "t1",
-        { a: { text: "ok" } },
+        { a: { action: "accept", content: { text: "ok" } } },
         { extensions: [MCP_EXT_TASKS] },
       );
       await mcpCancelTask(srv.url, "t1", { extensions: [MCP_EXT_TASKS] });
@@ -1053,16 +1148,23 @@ describe("MCP 2026-07-28", () => {
         "text/html;profile=mcp-app",
       ]);
 
+      const skillsSession = {
+        ...modern,
+        capabilities: { resources: {}, extensions: { [MCP_EXT_SKILLS]: {} } },
+      };
       const skills = await mcpListSkills(srv.url, {
+        session: skillsSession,
         extensions: [MCP_EXT_SKILLS],
       });
       expect(skills[0]?.resources).toBe("dynamic");
       const skill = await mcpGetSkill(srv.url, "skill://a", {
+        session: skillsSession,
         extensions: [MCP_EXT_SKILLS],
       });
       expect(skill.skill.uri).toBe("skill://a");
       await expect(
         mcpReadResourceDirectory(srv.url, "skill://a", {
+          session: skillsSession,
           extensions: [MCP_EXT_SKILLS],
         }),
       ).rejects.toThrow(/directoryRead/);
@@ -1070,6 +1172,7 @@ describe("MCP 2026-07-28", () => {
         protocolVersion: MCP_PROTOCOL_VERSION,
         extensions: [MCP_EXT_SKILLS],
         capabilities: {
+          resources: {},
           extensions: { [MCP_EXT_SKILLS]: { directoryRead: true } },
         },
       };
