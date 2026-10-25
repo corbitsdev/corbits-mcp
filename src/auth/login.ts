@@ -152,6 +152,8 @@ export function createMcpAuthorizationSession(opts: {
     clientId: client.clientId,
   });
   let consumed = false;
+  let locked = false;
+  let exchanged: McpOAuthTokens | undefined;
   const authorizeUrl = new URL(buildAuthorizeUrl(config, pkce, state));
   if (config.scopes.length === 0) authorizeUrl.searchParams.delete("scope");
   return {
@@ -161,7 +163,7 @@ export function createMcpAuthorizationSession(opts: {
       consumed = true;
     },
     async complete(params: URLSearchParams): Promise<void> {
-      if (consumed || now() >= expiresAt)
+      if (consumed || locked || now() >= expiresAt)
         throw new OAuthDiscoveryError(
           "Authorization session expired or already consumed",
         );
@@ -179,24 +181,48 @@ export function createMcpAuthorizationSession(opts: {
           : {}),
       };
       assertAuthorizationCallbackIssuer(params, issuerOptions);
-      // An authentic terminal denial must consume the same one-use session as a code.
-      consumed = true;
-      const { code } = readAuthorizationCallback(params, issuerOptions);
-      let tokens: McpOAuthTokens;
+      // An authentic terminal denial consumes the one-use session. A code does
+      // not: cancellation during exchange must skip persistence, and a persist
+      // failure must leave the exchanged grant retryable.
+      locked = true;
       try {
-        tokens = tokensFromResponse(
-          await exchangeCode(
-            config,
-            code,
-            pkce.verifier,
-            secureOAuthFetch(opts.fetchImpl),
-          ),
-          now(),
-        );
-      } catch {
-        throw new OAuthDiscoveryError("OAuth code exchange failed");
+        if (exchanged === undefined) {
+          let code: string;
+          try {
+            ({ code } = readAuthorizationCallback(params, issuerOptions));
+          } catch (error) {
+            consumed = true;
+            throw error;
+          }
+          let tokens: McpOAuthTokens;
+          try {
+            tokens = tokensFromResponse(
+              await exchangeCode(
+                config,
+                code,
+                pkce.verifier,
+                secureOAuthFetch(opts.fetchImpl),
+              ),
+              now(),
+            );
+          } catch {
+            throw new OAuthDiscoveryError("OAuth code exchange failed");
+          }
+          if (consumed || now() >= expiresAt)
+            throw new OAuthDiscoveryError(
+              "Authorization session expired or already consumed",
+            );
+          exchanged = tokens;
+        }
+        if (consumed || now() >= expiresAt)
+          throw new OAuthDiscoveryError(
+            "Authorization session expired or already consumed",
+          );
+        await opts.persist(binding, exchanged);
+        consumed = true;
+      } finally {
+        if (!consumed) locked = false;
       }
-      await opts.persist(binding, tokens);
     },
   };
 }
