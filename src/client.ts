@@ -1006,13 +1006,12 @@ function shouldFallback(error: unknown): boolean {
   if (!(error instanceof McpError)) return false;
   if (error.cancelled) return false;
   if (error.timedOut) return true;
-  // Fall back only when the server may speak a legacy version: it answers the
-  // `server/discover` probe with method-not-found, at the transport edge with an
-  // HTTP 404 for a method it does not know, or reports that it cannot serve the
-  // stateless protocol version we asked for. Authz failures, rate limits, server
-  // errors, malformed responses, and other JSON-RPC errors are real failures that
-  // surface to the caller instead of triggering the legacy handshake; modern
-  // errors reject the stateless metadata outright.
+  // Streamable HTTP backward compatibility: inspect HTTP 400 bodies before
+  // falling back. Recognized modern errors require correcting the request,
+  // while empty or unrecognized bodies may come from a legacy session server.
+  if (error.status === 400)
+    return error.code === undefined || !MODERN_ERROR_CODES.has(error.code);
+  // Preserve the existing fallback rules for other transport responses.
   if (error.code === McpErrorCode.MethodNotFound) return true;
   if (error.status === 404) return true;
   if (/unsupported protocol version/i.test(error.message)) return true;
@@ -1028,7 +1027,8 @@ function shouldFallback(error: unknown): boolean {
  * Probe `server/discover`. A 2026-07-28 server returns a stateless session:
  * later calls send no `initialize`, no `notifications/initialized`, and no
  * `Mcp-Session-Id`. A method-not-found, a timeout, or a server that only
- * speaks a 2025 (or earlier) version falls back to `initialize`. Authz
+ * speaks a 2025 (or earlier) version falls back to `initialize`. HTTP 400
+ * also falls back unless its body contains a recognized modern error. Authz
  * failures, rate limits, server errors, and malformed responses are real
  * failures and surface to the caller instead of triggering the legacy
  * handshake.

@@ -265,8 +265,71 @@ describe("MCP 2026-07-28", () => {
     }
   });
 
+  test("unrecognized HTTP 400 discovery responses use a legacy session", async () => {
+    for (const body of [
+      "",
+      "Bad Request",
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32000, message: "Bad Request: Missing session ID" },
+      }),
+    ]) {
+      const srv = jsonServer((seen) => {
+        if (seen.method === "server/discover")
+          return new Response(body, { status: 400 });
+        if (seen.method === "initialize") {
+          const response = rpc(seen.body.id, { protocolVersion: "2025-03-26" });
+          response.headers.set("Mcp-Session-Id", "legacy-session");
+          return response;
+        }
+        expect(seen.headers.get("mcp-session-id")).toBe("legacy-session");
+        if (seen.method === "notifications/initialized")
+          return new Response(null, { status: 202 });
+        return rpc(seen.body.id, {
+          tools: [{ name: "echo", inputSchema: {} }],
+        });
+      });
+      try {
+        const session = await mcpConnect(srv.url);
+        expect(
+          (await mcpListTools(srv.url, { session })).map((tool) => tool.name),
+        ).toEqual(["echo"]);
+        expect(srv.seen.map((seen) => seen.method)).toEqual([
+          "server/discover",
+          "initialize",
+          "notifications/initialized",
+          "tools/list",
+        ]);
+      } finally {
+        srv.stop();
+      }
+    }
+  });
+
+  test("recognized modern HTTP 400 errors do not trigger legacy fallback", async () => {
+    for (const code of [
+      McpErrorCode.HeaderMismatch,
+      McpErrorCode.MissingRequiredClientCapability,
+      McpErrorCode.UnsupportedProtocolVersion,
+    ]) {
+      const srv = jsonServer((seen) =>
+        rpcError(seen.body.id, code, "modern error", undefined, 400),
+      );
+      try {
+        await expect(mcpConnect(srv.url)).rejects.toBeInstanceOf(McpError);
+        expect(srv.seen.map((seen) => seen.method)).toEqual([
+          "server/discover",
+        ]);
+      } finally {
+        srv.stop();
+      }
+    }
+  });
+
   test("authz, rate-limit, server, and malformed discover errors do not fall back", async () => {
     const failures: Array<{ status: number; body: string }> = [
+      { status: 401, body: "unauthorized" },
       { status: 403, body: "forbidden" },
       { status: 429, body: "slow down" },
       { status: 503, body: "boom" },
