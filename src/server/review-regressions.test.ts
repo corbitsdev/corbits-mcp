@@ -343,15 +343,33 @@ test("unknown tools/call matches a denied binding without probing the catalog", 
   const seen: string[] = [];
   const providers = () =>
     createToolProviders(
-      (["visible", "secret"] as const).map((name) => ({
-        definition: { name, inputSchema: { type: "object" } },
-        resource: `tool:${name}`,
-        action: "call",
-        execute: () => {
-          executions++;
-          return { content: [] };
+      [
+        {
+          definition: { name: "visible", inputSchema: { type: "object" } },
+          resource: "tool:visible",
+          action: "call",
+          execute: () => {
+            executions++;
+            return { content: [] };
+          },
         },
-      })),
+        {
+          definition: {
+            name: "secret",
+            inputSchema: {
+              type: "object",
+              properties: { token: { type: "string" } },
+              required: ["token"],
+            },
+          },
+          resource: "tool:secret",
+          action: "call",
+          execute: () => {
+            executions++;
+            return { content: [] };
+          },
+        },
+      ],
       "public",
     );
   const auth = {
@@ -389,15 +407,21 @@ test("unknown tools/call matches a denied binding without probing the catalog", 
     providers: providers(),
   });
   try {
-    const denied = await modern.fetch(
-      rpc("tools/call", { name: "secret", arguments: {} }),
-    );
-    const unknown = await modern.fetch(
-      rpc("tools/call", { name: "no-such-tool", arguments: {} }),
-    );
-    expect(denied.status).toBe(403);
-    expect(unknown.status).toBe(denied.status);
-    expect(await unknown.text()).toBe(await denied.text());
+    for (const args of [{}, { token: "present" }]) {
+      const denied = await modern.fetch(
+        rpc("tools/call", { name: "secret", arguments: args }),
+      );
+      const unknown = await modern.fetch(
+        rpc("tools/call", { name: "no-such-tool", arguments: args }),
+      );
+      const deniedBody = await denied.text();
+      const unknownBody = await unknown.text();
+      expect(denied.status).toBe(403);
+      expect(unknown.status).toBe(denied.status);
+      expect(unknownBody).toBe(deniedBody);
+      expect(deniedBody).not.toContain("JSON Schema");
+      expect(deniedBody).not.toContain("token");
+    }
     expect(executions).toBe(0);
     const listed = await modern.fetch(rpc("tools/list"));
     expect(listed.status).toBe(200);
@@ -478,33 +502,45 @@ test("unknown tools/call matches a denied binding without probing the catalog", 
         )
       ).status,
     ).toBe(202);
-    const hidden = await legacy.fetch(
-      post(
-        message(1, "tools/call", { name: "secret", arguments: {} }),
-        session,
-      ),
-    );
-    const missing = await legacy.fetch(
-      post(
-        message(2, "tools/call", { name: "no-such-tool", arguments: {} }),
-        session,
-      ),
-    );
-    const hiddenText = await hidden.text();
-    const missingText = await missing.text();
-    expect(hidden.status).toBe(missing.status);
-    expect(denial(hiddenText)).toBe("Operation forbidden");
-    expect(denial(missingText)).toBe(denial(hiddenText));
-    expect(hiddenText).not.toContain("Tool unavailable");
-    expect(missingText).not.toContain("Tool unavailable");
+    let nextId = 1;
+    for (const args of [{}, { token: "present" }]) {
+      const hidden = await legacy.fetch(
+        post(
+          message(nextId++, "tools/call", { name: "secret", arguments: args }),
+          session,
+        ),
+      );
+      const missing = await legacy.fetch(
+        post(
+          message(nextId++, "tools/call", {
+            name: "no-such-tool",
+            arguments: args,
+          }),
+          session,
+        ),
+      );
+      const hiddenText = await hidden.text();
+      const missingText = await missing.text();
+      expect(hidden.status).toBe(missing.status);
+      expect(denial(hiddenText)).toBe("Operation forbidden");
+      expect(denial(missingText)).toBe(denial(hiddenText));
+      expect(hiddenText).not.toContain("Tool unavailable");
+      expect(missingText).not.toContain("Tool unavailable");
+      expect(hiddenText).not.toContain("JSON Schema");
+      expect(missingText).not.toContain("JSON Schema");
+    }
     expect(executions).toBe(0);
-    const listed = await legacy.fetch(post(message(3, "tools/list"), session));
+    const listed = await legacy.fetch(
+      post(message(nextId++, "tools/list"), session),
+    );
     expect(listed.status).toBe(200);
     expect(await result(listed)).toMatchObject({
       result: { tools: [{ name: "visible" }] },
     });
     allowVisible = false;
-    const empty = await legacy.fetch(post(message(4, "tools/list"), session));
+    const empty = await legacy.fetch(
+      post(message(nextId++, "tools/list"), session),
+    );
     expect(empty.status).toBe(200);
     expect(await result(empty)).toMatchObject({ result: { tools: [] } });
     expect(executions).toBe(0);

@@ -208,9 +208,6 @@ export function createLegacyServer(
       const pair = provider.authorization
         ? provider.authorization(params)
         : { resource: provider.resource, action: provider.action };
-      const context = validation(session, message.method, params);
-      validateRequest(message.method, params, context);
-      validateRequestHeaders(request.headers, message.method, params, context);
       controller = new AbortController();
       session.active.set(id, controller);
       if (session.expires <= Date.now() || session.closed) controller.abort();
@@ -231,6 +228,9 @@ export function createLegacyServer(
           ])))
       )
         throw new McpError("Operation forbidden", 403, -32602);
+      const context = validation(session, message.method, params);
+      validateRequest(message.method, params, context);
+      validateRequestHeaders(request.headers, message.method, params, context);
       let lastProgress = -Infinity;
       const providerContext: McpRequestContext = {
         identity,

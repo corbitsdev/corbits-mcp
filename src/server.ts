@@ -190,6 +190,23 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         id = envelope.id;
         const params = record(envelope.params);
         const meta = record(params._meta);
+        if (envelope.method !== "server/discover") {
+          const gated = providers[envelope.method];
+          if (gated) {
+            const pair = methodAuthorization(gated, params);
+            if (pair !== null && options.auth !== "public" && identity) {
+              const permitted =
+                pair !== false &&
+                (await options.auth.authorize(identity, pair));
+              if (closed) return new Response(null, { status: 503 });
+              if (!permitted)
+                return (
+                  options.challenge?.(403) ??
+                  new Response(null, { status: 403 })
+                );
+            }
+          }
+        }
         const validation: McpValidationContext = {
           era: "modern",
           protocolVersion: MCP_PROTOCOL_VERSION,
@@ -255,16 +272,6 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         }
         const provider = providers[envelope.method];
         if (!provider) throw new McpError("Method not found", 404, -32601);
-        const pair = methodAuthorization(provider, params);
-        if (pair !== null && options.auth !== "public" && identity) {
-          const permitted =
-            pair !== false && (await options.auth.authorize(identity, pair));
-          if (closed) return new Response(null, { status: 503 });
-          if (!permitted)
-            return (
-              options.challenge?.(403) ?? new Response(null, { status: 403 })
-            );
-        }
         const controller = new AbortController();
         active.add(controller);
         const abort = () => controller.abort(request.signal.reason);
