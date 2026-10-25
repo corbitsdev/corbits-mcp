@@ -41,6 +41,10 @@ validation must not resolve network references implicitly.
   private `createMcpServer` policy. Bind tenant and approval in the host as
   well. Catalog visibility is not execution approval; the exposure pair is
   checked again on every invocation, and `approve` runs only after it is allowed.
+  A `tools/call` whose name is not in the catalog gets the same denial as a
+  binding `authorize` rejects, so the call cannot probe membership. `tools/list`
+  stays a filtered catalog — empty when nothing is visible — and is not a 403
+  merely because the caller can see no tools.
 - Private `server/discover` returns capabilities and server info only when
   `authorize` allows at least one registered pair (each exposure's resource and
   action, or any other provider's resource and action). A principal allowed for

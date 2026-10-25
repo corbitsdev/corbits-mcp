@@ -98,7 +98,8 @@ export function createToolProviders(
       authorizationPairs,
       authorization(params) {
         const tool = byName.get(String(params.name));
-        return tool ? { resource: tool.resource, action: tool.action } : null;
+        // Null would skip the gate and reveal whether the name is in the catalog.
+        return tool ? { resource: tool.resource, action: tool.action } : false;
       },
       schemas(params) {
         const definition = byName.get(String(params.name))?.definition;

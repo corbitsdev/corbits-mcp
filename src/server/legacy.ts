@@ -222,11 +222,13 @@ export function createLegacyServer(
         signal.addEventListener("abort", abortListener, { once: true });
       });
       if (
-        pair &&
-        !(await Promise.race([
-          authorized(identity, pair.resource, pair.action),
-          cancelled,
-        ]))
+        (pair === false && options.auth !== "public") ||
+        (pair !== null &&
+          pair !== false &&
+          !(await Promise.race([
+            authorized(identity, pair.resource, pair.action),
+            cancelled,
+          ])))
       )
         throw new McpError("Operation forbidden", 403, -32602);
       let lastProgress = -Infinity;

@@ -45,7 +45,7 @@ const record = (value: unknown): Record<string, unknown> =>
 function methodAuthorization(
   provider: McpProvider,
   params: Record<string, unknown>,
-): { resource: string; action: string } | null {
+): { resource: string; action: string } | null | false {
   return provider.authorization
     ? provider.authorization(params)
     : { resource: provider.resource, action: provider.action };
@@ -256,8 +256,9 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         const provider = providers[envelope.method];
         if (!provider) throw new McpError("Method not found", 404, -32601);
         const pair = methodAuthorization(provider, params);
-        if (pair && options.auth !== "public" && identity) {
-          const permitted = await options.auth.authorize(identity, pair);
+        if (pair !== null && options.auth !== "public" && identity) {
+          const permitted =
+            pair !== false && (await options.auth.authorize(identity, pair));
           if (closed) return new Response(null, { status: 503 });
           if (!permitted)
             return (

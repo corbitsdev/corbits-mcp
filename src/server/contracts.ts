@@ -33,8 +33,11 @@ export type McpProvider = {
    * Method gate. Undefined uses `resource` and `action`.
    * Null means this method has no single pair; the provider authorizes each
    * binding with that binding's own resource and action.
+   * False denies immediately, the same response as `authorize` returning false.
    */
-  authorization?: (params: Record<string, unknown>) => McpAuthOperation | null;
+  authorization?: (
+    params: Record<string, unknown>,
+  ) => McpAuthOperation | null | false;
   /** Private discover succeeds when any of these pairs is allowed. Defaults to resource/action. */
   authorizationPairs?: readonly McpAuthOperation[];
   schemas?: (

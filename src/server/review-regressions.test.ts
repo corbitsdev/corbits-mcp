@@ -330,3 +330,186 @@ test("runtime provider null and unknown discriminators never cross the success b
     }
   }
 });
+
+test("unknown tools/call matches a denied binding without probing the catalog", async () => {
+  const identity = {
+    tenantId: "tenant",
+    principalId: "principal",
+    authorizationContextId: "grant-v1",
+    scopes: [] as string[],
+  };
+  let executions = 0;
+  let allowVisible = true;
+  const seen: string[] = [];
+  const providers = () =>
+    createToolProviders(
+      (["visible", "secret"] as const).map((name) => ({
+        definition: { name, inputSchema: { type: "object" } },
+        resource: `tool:${name}`,
+        action: "call",
+        execute: () => {
+          executions++;
+          return { content: [] };
+        },
+      })),
+      "public",
+    );
+  const auth = {
+    authenticate: () => identity,
+    authorize: (
+      _principal: typeof identity,
+      operation: { resource: string; action: string },
+    ) => {
+      seen.push(`${operation.resource} ${operation.action}`);
+      return (
+        (operation.resource === "mcp:server" &&
+          operation.action === "initialize") ||
+        (allowVisible &&
+          operation.resource === "tool:visible" &&
+          operation.action === "call")
+      );
+    },
+  };
+  const denial = (body: string) =>
+    body.trim()
+      ? body
+          .trim()
+          .split("\n\n")
+          .map((frame) => {
+            const parsed = JSON.parse(
+              frame.startsWith("data: ") ? frame.slice(6) : frame,
+            ) as { error?: { message?: string } };
+            return parsed.error?.message ?? "";
+          })
+          .join("\n")
+      : "";
+  const modern = createMcpServer({
+    serverInfo,
+    auth,
+    providers: providers(),
+  });
+  try {
+    const denied = await modern.fetch(
+      rpc("tools/call", { name: "secret", arguments: {} }),
+    );
+    const unknown = await modern.fetch(
+      rpc("tools/call", { name: "no-such-tool", arguments: {} }),
+    );
+    expect(denied.status).toBe(403);
+    expect(unknown.status).toBe(denied.status);
+    expect(await unknown.text()).toBe(await denied.text());
+    expect(executions).toBe(0);
+    const listed = await modern.fetch(rpc("tools/list"));
+    expect(listed.status).toBe(200);
+    expect(await result(listed)).toMatchObject({
+      result: { tools: [{ name: "visible" }] },
+    });
+    expect(
+      await result(
+        await modern.fetch(
+          rpc("tools/call", { name: "visible", arguments: {} }),
+        ),
+      ),
+    ).toHaveProperty("result");
+    expect(executions).toBe(1);
+    allowVisible = false;
+    const empty = await modern.fetch(rpc("tools/list"));
+    expect(empty.status).toBe(200);
+    expect(await result(empty)).toMatchObject({ result: { tools: [] } });
+    const hidden = await modern.fetch(
+      rpc("tools/call", { name: "secret", arguments: {} }),
+    );
+    const missing = await modern.fetch(
+      rpc("tools/call", { name: "no-such-tool", arguments: {} }),
+    );
+    expect(hidden.status).toBe(403);
+    expect(missing.status).toBe(hidden.status);
+    expect(await missing.text()).toBe(await hidden.text());
+    expect(executions).toBe(1);
+  } finally {
+    await modern.close();
+  }
+
+  executions = 0;
+  allowVisible = true;
+  const legacy = createMcpServer({
+    serverInfo,
+    auth,
+    legacy: { versions: ["2025-11-25"] },
+    providers: providers(),
+  });
+  const post = (body: unknown, session?: string) =>
+    new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        ...(session
+          ? { "Mcp-Session-Id": session, "MCP-Protocol-Version": "2025-11-25" }
+          : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  const message = (
+    id: number,
+    method: string,
+    params: Record<string, unknown> = {},
+  ) => ({ jsonrpc: "2.0", id, method, params });
+  try {
+    const opened = await legacy.fetch(
+      post(
+        message(0, "initialize", {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        }),
+      ),
+    );
+    expect(opened.status).toBe(200);
+    const session = opened.headers.get("Mcp-Session-Id");
+    if (!session) throw new Error("missing legacy session");
+    expect(
+      (
+        await legacy.fetch(
+          post(
+            { jsonrpc: "2.0", method: "notifications/initialized" },
+            session,
+          ),
+        )
+      ).status,
+    ).toBe(202);
+    const hidden = await legacy.fetch(
+      post(
+        message(1, "tools/call", { name: "secret", arguments: {} }),
+        session,
+      ),
+    );
+    const missing = await legacy.fetch(
+      post(
+        message(2, "tools/call", { name: "no-such-tool", arguments: {} }),
+        session,
+      ),
+    );
+    const hiddenText = await hidden.text();
+    const missingText = await missing.text();
+    expect(hidden.status).toBe(missing.status);
+    expect(denial(hiddenText)).toBe("Operation forbidden");
+    expect(denial(missingText)).toBe(denial(hiddenText));
+    expect(hiddenText).not.toContain("Tool unavailable");
+    expect(missingText).not.toContain("Tool unavailable");
+    expect(executions).toBe(0);
+    const listed = await legacy.fetch(post(message(3, "tools/list"), session));
+    expect(listed.status).toBe(200);
+    expect(await result(listed)).toMatchObject({
+      result: { tools: [{ name: "visible" }] },
+    });
+    allowVisible = false;
+    const empty = await legacy.fetch(post(message(4, "tools/list"), session));
+    expect(empty.status).toBe(200);
+    expect(await result(empty)).toMatchObject({ result: { tools: [] } });
+    expect(executions).toBe(0);
+  } finally {
+    await legacy.close();
+  }
+  expect(seen.some((entry) => entry.startsWith("mcp:tools"))).toBe(false);
+});
