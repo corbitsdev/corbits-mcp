@@ -180,6 +180,50 @@ A host records how a server authenticates in the credential's `metadata.mcp.auth
 
 Grant the agent's principal `tool:deepwiki.*` for the whole server, or `tool:deepwiki.<tool>` per tool, with `allow`, `ask` or `deny`.
 
+## Migrating to the 2026 client API
+
+The 2026 client changes the public return contract: `mcpCallTool` returns
+`McpToolCallResult`, not only a resolved `McpToolResult`. Callers must narrow
+`resultType` before reading `content`, `isError`, or `structuredContent`:
+
+```ts
+const result = await mcpCallTool(url, "echo", { text: "hi" }, { session });
+if (result.resultType === "input_required") {
+  // Fulfill result.inputRequests, then pass this result and the collected
+  // inputResponses to mcpContinue(url, result, inputResponses, { session }).
+} else if (result.resultType === "task") {
+  // Handle the task through the opted-in tasks extension.
+} else {
+  console.log(result.content);
+}
+```
+
+`mcpContinue` can return another `input_required` result; always use the latest
+pending result for the next retry. Prompt and resource reads also expose their
+pending variants. Do not cast a union result to a resolved-only type. This is a
+breaking API change: the release containing it must be the next minor release,
+with a `!` marker in the breaking-change PR title as required by CONTRIBUTING.
+
+### Protocol regression coverage and limits
+
+The focused regressions in `src/protocol-2026.test.ts` check these requirements:
+
+- [Streamable HTTP backward compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#backward-compatibility):
+  an HTTP 400 discovery response with an empty, non-JSON, or legacy missing-session
+  error body falls back to `initialize`; later requests carry the legacy session.
+  Recognized modern errors do not take that fallback. Ordinary HTTP 401/403,
+  rate-limit, server, and malformed successful responses remain failures.
+- [MRTR client requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr#client-requirements-basic-workflow):
+  retries echo only the latest `requestState`, including an empty string, and
+  omit it when the latest response omits it. Tests also check fresh request IDs,
+  original tool arguments, and the latest input responses across multiple rounds.
+
+These tests and the SDK transport e2e suite are targeted compatibility evidence,
+not comprehensive MCP certification. The transport and extension limits listed
+above still apply, including no deprecated HTTP+SSE transport or SSE resumption.
+This scoped change does not audit or change authorization-error precedence or
+OAuth URL handling.
+
 ## Upgrading from 0.1
 
 - Existing server configs, stored catalogs and the `mcp-server` credential keep working unchanged.
