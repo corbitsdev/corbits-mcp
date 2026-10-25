@@ -28,6 +28,20 @@ export type McpToolBinding = {
   ) => McpOperationOutcome | Promise<McpOperationOutcome>;
 };
 
+function activePolicy(
+  providerAuth: McpAuthPolicy | "public",
+  serverAuth: McpAuthPolicy | "public",
+): "public" | Pick<McpAuthPolicy, "authorize"> {
+  if (providerAuth === "public") return serverAuth;
+  if (serverAuth === "public" || serverAuth === providerAuth)
+    return providerAuth;
+  return {
+    authorize: async (identity, operation) =>
+      (await providerAuth.authorize(identity, operation)) &&
+      (await serverAuth.authorize(identity, operation)),
+  };
+}
+
 /** Finite catalog; authorization is rechecked even after successful discovery. */
 export function createToolProviders(
   tools: readonly McpToolBinding[],
@@ -42,18 +56,33 @@ export function createToolProviders(
       validateSchema(tool.definition.outputSchema);
     byName.set(tool.definition.name, tool);
   }
-  const allowed = async (tool: McpToolBinding, context: McpRequestContext) =>
-    (tool.visible?.(context) ?? true) &&
-    (auth === "public" ||
-      (context.identity !== null &&
-        (await auth.authorize(context.identity, {
-          resource: tool.resource,
-          action: tool.action,
-        }))));
+  const bindings = [...byName.values()];
+  const authorizationPairs = bindings.map((tool) => ({
+    resource: tool.resource,
+    action: tool.action,
+  }));
+  const fallback = authorizationPairs[0] ?? {
+    resource: "mcp:server",
+    action: "discover",
+  };
+  const allowed = async (tool: McpToolBinding, context: McpRequestContext) => {
+    const policy = activePolicy(auth, context.auth);
+    return (
+      (tool.visible?.(context) ?? true) &&
+      (policy === "public" ||
+        (context.identity !== null &&
+          (await policy.authorize(context.identity, {
+            resource: tool.resource,
+            action: tool.action,
+          }))))
+    );
+  };
   return {
     "tools/list": {
-      resource: "mcp:tools",
-      action: "list",
+      resource: fallback.resource,
+      action: fallback.action,
+      authorizationPairs,
+      authorization: () => null,
       async handle(params, context) {
         if (params.cursor !== undefined)
           throw new McpError("Unknown cursor", 400, -32602);
@@ -64,8 +93,13 @@ export function createToolProviders(
       },
     },
     "tools/call": {
-      resource: "mcp:tools",
-      action: "call",
+      resource: fallback.resource,
+      action: fallback.action,
+      authorizationPairs,
+      authorization(params) {
+        const tool = byName.get(String(params.name));
+        return tool ? { resource: tool.resource, action: tool.action } : null;
+      },
       schemas(params) {
         const definition = byName.get(String(params.name))?.definition;
         return definition

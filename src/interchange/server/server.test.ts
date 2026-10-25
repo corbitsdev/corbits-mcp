@@ -273,3 +273,80 @@ test("traversal, unbound paths, cross-origin paths and unresolved schemas fail b
     ]),
   ).toThrow();
 });
+
+test("exposure resource and action are the only tool authorization pair", async () => {
+  const seen: string[] = [];
+  let executions = 0;
+  let approvals = 0;
+  let permitted = true;
+  const policy: McpAuthPolicy = {
+    authenticate: () => identity,
+    authorize: (_principal, operation) => {
+      seen.push(`${operation.resource} ${operation.action}`);
+      return (
+        permitted &&
+        operation.resource === base.resource &&
+        operation.action === base.action
+      );
+    },
+  };
+  const endpoint = server(
+    [
+      {
+        ...base,
+        kind: "tool",
+        toolName: "selected",
+        approve: async () => {
+          approvals++;
+          return true;
+        },
+        bundle: {
+          definitions: [definition],
+          run: async (call) => {
+            executions++;
+            return { callId: call.id, content: "ran" };
+          },
+        },
+      },
+    ],
+    policy,
+  );
+  const discovered = await endpoint.fetch(rpc("server/discover"));
+  expect(discovered.status).toBe(200);
+  expect(await result(discovered)).toMatchObject({
+    result: {
+      _meta: { "io.modelcontextprotocol/serverInfo": { name: "interchange" } },
+    },
+  });
+  expect(await result(await endpoint.fetch(rpc("tools/list")))).toMatchObject({
+    result: { tools: [{ name: "selected" }] },
+  });
+  expect(
+    await result(
+      await endpoint.fetch(
+        rpc("tools/call", { name: "selected", arguments: { content: "x" } }),
+      ),
+    ),
+  ).toMatchObject({ result: { content: [{ text: "ran" }] } });
+  expect(approvals).toBe(1);
+  expect(executions).toBe(1);
+  expect(seen.every((entry) => entry === "tool:selected call")).toBe(true);
+  permitted = false;
+  const denied = await endpoint.fetch(rpc("server/discover"));
+  expect(denied.status).toBe(403);
+  expect(await denied.text()).not.toContain("interchange");
+  expect(await result(await endpoint.fetch(rpc("tools/list")))).toMatchObject({
+    result: { tools: [] },
+  });
+  expect(
+    (
+      await endpoint.fetch(
+        rpc("tools/call", { name: "selected", arguments: { content: "x" } }),
+      )
+    ).status,
+  ).toBe(403);
+  expect(approvals).toBe(1);
+  expect(executions).toBe(1);
+  expect(seen.some((entry) => entry.startsWith("mcp:tools"))).toBe(false);
+  await endpoint.close();
+});

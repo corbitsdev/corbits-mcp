@@ -33,9 +33,20 @@ validation must not resolve network references implicitly.
 - All tools start ask-marked; explicit safe-tool allowlists cannot lower a
   destructive tool's ask floor. Calling a bare ToolBundle dispatcher does not
   itself perform host authorization.
-- Expose a finite list with `createInterchangeProviders`. Bind tenant, resource,
-  action and approval in the host. Catalog visibility is not execution approval;
-  authorization is checked again on every invocation.
+- Expose a finite list with `createInterchangeProviders`. The only tool
+  authorization pair is that exposure's `resource` and `action` — the same
+  pair for catalog visibility and for invocation. Do not grant a separate
+  `mcp:tools` `list` or `call` action. The server gate authorizes the selected
+  exposure pair, and `auth: "public"` on `createToolProviders` does not skip a
+  private `createMcpServer` policy. Bind tenant and approval in the host as
+  well. Catalog visibility is not execution approval; the exposure pair is
+  checked again on every invocation, and `approve` runs only after it is allowed.
+- Private `server/discover` returns capabilities and server info only when
+  `authorize` allows at least one registered pair (each exposure's resource and
+  action, or any other provider's resource and action). A principal allowed for
+  none receives 403 and no discover body. A private server with no providers
+  authorizes resource `mcp:server`, action `discover`. Public servers
+  (`auth: "public"`) do not perform that check.
 - Credential handles are mediated, origin-pinned fetches. Raw bearer values must
   never enter agent tool arguments/results, skills, task records or model context.
 - Private Interchange `detail` is not automatically exported over MCP. An explicit

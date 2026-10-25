@@ -1,4 +1,8 @@
-import type { McpAuthPolicy, McpIdentity } from "../auth/contracts.js";
+import type {
+  McpAuthOperation,
+  McpAuthPolicy,
+  McpIdentity,
+} from "../auth/contracts.js";
 import type {
   McpExtensionSettings,
   McpValidationContext,
@@ -11,6 +15,8 @@ export type McpOperationOutcome = McpMethodMap["tools/call"]["result"];
 
 export type McpRequestContext = {
   identity: McpIdentity | null;
+  /** Server policy. A public tool catalog must not ignore this on a private server. */
+  auth: McpAuthPolicy | "public";
   requestId: string | number;
   protocolVersion: string;
   clientCapabilities: Record<string, unknown>;
@@ -23,6 +29,14 @@ export type McpProvider = {
   /** Authorization applies to both catalog and execution methods. */
   resource: string;
   action: string;
+  /**
+   * Method gate. Undefined uses `resource` and `action`.
+   * Null means this method has no single pair; the provider authorizes each
+   * binding with that binding's own resource and action.
+   */
+  authorization?: (params: Record<string, unknown>) => McpAuthOperation | null;
+  /** Private discover succeeds when any of these pairs is allowed. Defaults to resource/action. */
+  authorizationPairs?: readonly McpAuthOperation[];
   schemas?: (
     params: Record<string, unknown>,
   ) => Pick<McpValidationContext, "inputSchema" | "outputSchema">;

@@ -283,3 +283,109 @@ test("extension capability advertisements require corresponding providers", () =
     }),
   ).toThrow();
 });
+
+test("denied authorize does not return server/discover", async () => {
+  const seen: { resource: string; action: string }[] = [];
+  const policy: McpAuthPolicy = {
+    authenticate: () => identity,
+    authorize: (_principal, operation) => {
+      seen.push(operation);
+      return false;
+    },
+  };
+  const server = createMcpServer({
+    serverInfo: info,
+    auth: policy,
+    providers: createToolProviders(
+      [
+        {
+          definition: { name: "echo", inputSchema: { type: "object" } },
+          resource: "tool:echo",
+          action: "invoke",
+          execute: () => ({ content: [] }),
+        },
+      ],
+      "public",
+    ),
+  });
+  const response = await server.fetch(rpc("server/discover"));
+  expect(response.status).toBe(403);
+  expect(await response.text()).not.toContain(info.name);
+  expect(seen).toEqual([{ resource: "tool:echo", action: "invoke" }]);
+  const empty = createMcpServer({ serverInfo: info, auth: policy });
+  seen.length = 0;
+  const bare = await empty.fetch(rpc("server/discover"));
+  expect(bare.status).toBe(403);
+  expect(await bare.text()).not.toContain(info.name);
+  expect(seen).toEqual([{ resource: "mcp:server", action: "discover" }]);
+  await server.close();
+  await empty.close();
+});
+
+test("private server authorizes each tool binding when the provider auth is public", async () => {
+  let executions = 0;
+  const seen: string[] = [];
+  let allow = true;
+  const server = createMcpServer({
+    serverInfo: info,
+    auth: {
+      authenticate: () => identity,
+      authorize: (_principal, operation) => {
+        seen.push(`${operation.resource} ${operation.action}`);
+        return (
+          allow &&
+          operation.resource === "tool:echo" &&
+          operation.action === "invoke"
+        );
+      },
+    },
+    providers: createToolProviders(
+      [
+        {
+          definition: { name: "echo", inputSchema: { type: "object" } },
+          resource: "tool:echo",
+          action: "invoke",
+          execute: () => {
+            executions++;
+            return { content: [{ type: "text", text: "ok" }] };
+          },
+        },
+        {
+          definition: { name: "other", inputSchema: { type: "object" } },
+          resource: "tool:other",
+          action: "invoke",
+          execute: () => {
+            executions++;
+            return { content: [] };
+          },
+        },
+      ],
+      "public",
+    ),
+  });
+  expect((await server.fetch(rpc("server/discover"))).status).toBe(200);
+  expect(await result(await server.fetch(rpc("tools/list")))).toMatchObject({
+    result: { tools: [{ name: "echo" }] },
+  });
+  expect(
+    await result(
+      await server.fetch(rpc("tools/call", { name: "echo", arguments: {} })),
+    ),
+  ).toMatchObject({ result: { content: [{ text: "ok" }] } });
+  expect(executions).toBe(1);
+  expect(
+    seen.every(
+      (entry) => entry === "tool:echo invoke" || entry === "tool:other invoke",
+    ),
+  ).toBe(true);
+  allow = false;
+  expect(await result(await server.fetch(rpc("tools/list")))).toMatchObject({
+    result: { tools: [] },
+  });
+  expect(
+    (await server.fetch(rpc("tools/call", { name: "echo", arguments: {} })))
+      .status,
+  ).toBe(403);
+  expect(executions).toBe(1);
+  await server.close();
+});

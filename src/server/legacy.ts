@@ -205,6 +205,9 @@ export function createLegacyServer(
         throw new McpError("Method not available in legacy mode", 404, -32601);
       const provider = providers[message.method]!;
       const params = message.params ?? {};
+      const pair = provider.authorization
+        ? provider.authorization(params)
+        : { resource: provider.resource, action: provider.action };
       const context = validation(session, message.method, params);
       validateRequest(message.method, params, context);
       validateRequestHeaders(request.headers, message.method, params, context);
@@ -219,8 +222,9 @@ export function createLegacyServer(
         signal.addEventListener("abort", abortListener, { once: true });
       });
       if (
+        pair &&
         !(await Promise.race([
-          authorized(identity, provider.resource, provider.action),
+          authorized(identity, pair.resource, pair.action),
           cancelled,
         ]))
       )
@@ -228,6 +232,7 @@ export function createLegacyServer(
       let lastProgress = -Infinity;
       const providerContext: McpRequestContext = {
         identity,
+        auth: options.auth,
         requestId: id,
         protocolVersion: session.version,
         clientCapabilities: session.capabilities,

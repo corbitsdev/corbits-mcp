@@ -26,6 +26,8 @@ import type {
   McpServerOptions,
   McpServer,
   McpRequestContext,
+  McpProvider,
+  McpProviders,
 } from "./server/contracts.js";
 export type * from "./server/contracts.js";
 export {
@@ -39,6 +41,37 @@ const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+
+function methodAuthorization(
+  provider: McpProvider,
+  params: Record<string, unknown>,
+): { resource: string; action: string } | null {
+  return provider.authorization
+    ? provider.authorization(params)
+    : { resource: provider.resource, action: provider.action };
+}
+
+/** Pairs a private discover check may satisfy. No providers means mcp:server/discover. */
+function discoverAuthorizations(
+  providers: McpProviders,
+): { resource: string; action: string }[] {
+  const pairs: { resource: string; action: string }[] = [];
+  const seen = new Set<string>();
+  for (const provider of Object.values(providers)) {
+    const listed = provider.authorizationPairs ?? [
+      { resource: provider.resource, action: provider.action },
+    ];
+    for (const pair of listed) {
+      const key = `${pair.resource}\0${pair.action}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push(pair);
+    }
+  }
+  if (pairs.length === 0)
+    pairs.push({ resource: "mcp:server", action: "discover" });
+  return pairs;
+}
 
 /** Stateless modern endpoint with an independently gated legacy session transport. */
 export function createMcpServer(options: McpServerOptions): McpServer {
@@ -186,6 +219,20 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         );
         validateRequest(envelope.method, params, validation);
         if (envelope.method === "server/discover") {
+          if (options.auth !== "public") {
+            let permitted = false;
+            for (const pair of discoverAuthorizations(providers)) {
+              if (identity && (await options.auth.authorize(identity, pair))) {
+                permitted = true;
+                break;
+              }
+            }
+            if (closed) return new Response(null, { status: 503 });
+            if (!permitted)
+              return (
+                options.challenge?.(403) ?? new Response(null, { status: 403 })
+              );
+          }
           const result = validateResult(
             envelope.method,
             {
@@ -208,17 +255,15 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         }
         const provider = providers[envelope.method];
         if (!provider) throw new McpError("Method not found", 404, -32601);
-        if (
-          options.auth !== "public" &&
-          identity &&
-          !(await options.auth.authorize(identity, {
-            resource: provider.resource,
-            action: provider.action,
-          }))
-        )
-          return (
-            options.challenge?.(403) ?? new Response(null, { status: 403 })
-          );
+        const pair = methodAuthorization(provider, params);
+        if (pair && options.auth !== "public" && identity) {
+          const permitted = await options.auth.authorize(identity, pair);
+          if (closed) return new Response(null, { status: 503 });
+          if (!permitted)
+            return (
+              options.challenge?.(403) ?? new Response(null, { status: 403 })
+            );
+        }
         const controller = new AbortController();
         active.add(controller);
         const abort = () => controller.abort(request.signal.reason);
@@ -275,6 +320,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
             if (controller.signal.aborted) finish();
             const context: McpRequestContext = {
               identity,
+              auth: options.auth,
               requestId,
               protocolVersion: MCP_PROTOCOL_VERSION,
               clientCapabilities: validation.clientCapabilities ?? {},
