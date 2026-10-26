@@ -23,10 +23,10 @@ afterEach(() => {
 });
 
 const CATALOG: McpTool[] = [
-  { name: "echo", description: "Echoes.", inputSchema: {} },
+  { name: "echo", description: "Echoes.", inputSchema: { type: "object" } },
   {
     name: "delete_thing",
-    inputSchema: {},
+    inputSchema: { type: "object" },
     annotations: { destructiveHint: true },
   },
 ];
@@ -315,7 +315,10 @@ describe("mcpServers round trip through a mediated handle", () => {
 });
 
 describe("catalog names", () => {
-  const tool = (name: string): McpTool => ({ name, inputSchema: {} });
+  const tool = (name: string): McpTool => ({
+    name,
+    inputSchema: { type: "object" },
+  });
 
   test("a catalog listing a tool twice is refused", () => {
     expect(() =>

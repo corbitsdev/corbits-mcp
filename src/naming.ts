@@ -2,6 +2,8 @@
 // the deployed `mcpServers` sidecar bundle so both project a server's catalog
 // onto identical tool names and identical approval marks.
 
+import { validateUiToolMeta } from "./protocol/ui.js";
+import { isToolVisibleToModel } from "./extensions/apps.js";
 import type { McpTool } from "./client.js";
 import { parseMcpEndpoint } from "./url.js";
 
@@ -75,4 +77,12 @@ export function isAskExempt(
 ): boolean {
   if (tool.annotations?.destructiveHint === true) return false;
   return allowWithoutAsk.includes(qualified);
+}
+
+/** App-only tools never enter model definitions or the model dispatcher. */
+export function isModelVisible(tool: McpTool): boolean {
+  const ui = tool._meta?.ui;
+  return isToolVisibleToModel(
+    ui === undefined ? undefined : validateUiToolMeta(ui),
+  );
 }

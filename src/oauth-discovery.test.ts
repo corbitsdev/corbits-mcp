@@ -9,9 +9,14 @@ import {
 import type { FetchLike } from "@intx/harness";
 
 import {
+  assertAuthorizationIssuer,
   discoverMcpLoginEntry,
   mcpClientConfig,
+  mcpClientIdMetadataDocument,
+  preferredMcpClientRegistration,
+  readAuthorizationCallback,
   registerMcpClient,
+  resolveStoredMcpClient,
   selectMcpScopes,
   type McpLoginEntry,
 } from "./index.js";
@@ -138,21 +143,30 @@ describe("MCP OAuth discovery", () => {
         body: fallbackAsMetadata,
       },
     });
-    const entry = await discoverMcpLoginEntry({ resourceUrl, fetchImpl });
+    const entry = await discoverMcpLoginEntry({
+      resourceUrl,
+      fetchImpl,
+      allowLegacyAuthorizationServerFallback: true,
+    });
     expect(entry.authorizationServer.tokenEndpoint).toBe(
       "https://auth.example.com/token",
     );
   });
 
-  test("accepts fallback metadata whose issuer differs only by a trailing slash", async () => {
+  test("rejects fallback metadata whose issuer differs only by a trailing slash", async () => {
     const { fetchImpl } = fakeFetch({
       "https://mcp.example.com/.well-known/oauth-authorization-server/mcp": {
         status: 200,
         body: { ...fallbackAsMetadata, issuer: `${resourceUrl}/` },
       },
     });
-    const entry = await discoverMcpLoginEntry({ resourceUrl, fetchImpl });
-    expect(entry.authorizationServer.issuer).toBe(`${resourceUrl}/`);
+    await expect(
+      discoverMcpLoginEntry({
+        resourceUrl,
+        fetchImpl,
+        allowLegacyAuthorizationServerFallback: true,
+      }),
+    ).rejects.toThrow(/issuer mismatch/);
   });
 
   test("rejects fallback metadata naming an issuer other than the resource", async () => {
@@ -166,7 +180,11 @@ describe("MCP OAuth discovery", () => {
       },
     });
     await expect(
-      discoverMcpLoginEntry({ resourceUrl, fetchImpl }),
+      discoverMcpLoginEntry({
+        resourceUrl,
+        fetchImpl,
+        allowLegacyAuthorizationServerFallback: true,
+      }),
     ).rejects.toThrow(/issuer mismatch/);
   });
 
@@ -474,6 +492,261 @@ describe("MCP OAuth discovery", () => {
     const body: unknown = JSON.parse(String(requests[0]?.init?.body ?? "{}"));
     expect(body).not.toHaveProperty("scope");
     expect(result.scope).toBeUndefined();
+    expect(body).toMatchObject({ application_type: "native" });
+    expect(result.issuer).toBeUndefined();
+  });
+
+  test("records the issuer on a dynamic registration and can ask for application_type web", async () => {
+    const { fetchImpl, requests } = fakeFetch({
+      "https://auth.example.com/register": {
+        status: 200,
+        body: { client_id: "web-client" },
+      },
+    });
+    const result = await registerMcpClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUris: ["https://app.example.com/callback"],
+      clientName: "Corbits",
+      applicationType: "web",
+      issuer: "https://auth.example.com",
+      fetchImpl,
+    });
+    const body: unknown = JSON.parse(String(requests[0]?.init?.body ?? "{}"));
+    expect(body).toMatchObject({ application_type: "web" });
+    expect(result.issuer).toBe("https://auth.example.com");
+  });
+
+  test("keeps client_id_metadata_document_supported when the authorization server sends it", async () => {
+    const { fetchImpl } = fakeFetch({
+      "https://mcp.example.com/.well-known/oauth-protected-resource/mcp": {
+        status: 200,
+        body: {
+          resource: resourceUrl,
+          authorization_servers: ["https://auth.example.com"],
+        },
+      },
+      "https://auth.example.com/.well-known/oauth-authorization-server": {
+        status: 200,
+        body: {
+          ...asMetadata,
+          client_id_metadata_document_supported: true,
+          authorization_response_iss_parameter_supported: true,
+        },
+      },
+    });
+    const entry = await discoverMcpLoginEntry({ resourceUrl, fetchImpl });
+    expect(entry.authorizationServer.clientIdMetadataDocumentSupported).toBe(
+      true,
+    );
+    expect(
+      entry.authorizationServer.authorizationResponseIssParameterSupported,
+    ).toBe(true);
+  });
+});
+
+describe("MCP client registration choice", () => {
+  const metadataUrl = "https://app.example.com/oauth/client.json";
+
+  test("builds a metadata document whose client_id is the document URL", () => {
+    const document = mcpClientIdMetadataDocument({
+      metadataUrl,
+      clientName: "Corbits",
+      redirectUris: ["http://127.0.0.1:18080/callback"],
+    });
+    expect(document.client_id).toBe(metadataUrl);
+    expect(document.token_endpoint_auth_method).toBe("none");
+    expect(document.redirect_uris).toEqual(["http://127.0.0.1:18080/callback"]);
+  });
+
+  test("refuses a metadata URL without a path", () => {
+    expect(() =>
+      mcpClientIdMetadataDocument({
+        metadataUrl: "https://app.example.com",
+        clientName: "Corbits",
+        redirectUris: ["http://127.0.0.1/callback"],
+      }),
+    ).toThrow(/path/);
+  });
+
+  test("refuses a client metadata URL with dot segments", () => {
+    expect(() =>
+      mcpClientIdMetadataDocument({
+        metadataUrl: "https://app.example.com/oauth/../client.json",
+        clientName: "Corbits",
+        redirectUris: ["http://127.0.0.1/callback"],
+      }),
+    ).toThrow(/dot segments/);
+    expect(() =>
+      preferredMcpClientRegistration({
+        authorizationServer: {
+          clientIdMetadataDocumentSupported: true,
+          registrationEndpoint: "https://auth.example.com/register",
+        },
+        clientMetadataUrl: "https://app.example.com/oauth/../client.json",
+      }),
+    ).toThrow(/dot segments/);
+  });
+
+  test("prefers pre-registered, then CIMD, then dynamic registration", () => {
+    expect(
+      preferredMcpClientRegistration({
+        authorizationServer: {
+          clientIdMetadataDocumentSupported: true,
+          registrationEndpoint: "https://auth.example.com/register",
+        },
+        preRegisteredClientId: "pre",
+        clientMetadataUrl: metadataUrl,
+      }),
+    ).toEqual({ mechanism: "pre-registered", clientId: "pre" });
+    expect(
+      preferredMcpClientRegistration({
+        authorizationServer: {
+          clientIdMetadataDocumentSupported: true,
+          registrationEndpoint: "https://auth.example.com/register",
+        },
+        clientMetadataUrl: metadataUrl,
+      }),
+    ).toEqual({ mechanism: "client-id-metadata", clientId: metadataUrl });
+    expect(
+      preferredMcpClientRegistration({
+        authorizationServer: {
+          registrationEndpoint: "https://auth.example.com/register",
+        },
+        clientMetadataUrl: metadataUrl,
+      }),
+    ).toEqual({
+      mechanism: "dynamic",
+      registrationEndpoint: "https://auth.example.com/register",
+    });
+    expect(() =>
+      preferredMcpClientRegistration({ authorizationServer: {} }),
+    ).toThrow(OAuthDiscoveryError);
+  });
+
+  test("reuses CIMD across issuers and refuses a dynamic client for another issuer", () => {
+    expect(
+      resolveStoredMcpClient("https://other.example.com", {
+        kind: "cimd",
+        clientId: metadataUrl,
+        issuer: "https://auth.example.com",
+      }).clientId,
+    ).toBe(metadataUrl);
+    expect(
+      resolveStoredMcpClient("https://auth.example.com", {
+        kind: "dynamic",
+        clientId: "dyn",
+        issuer: "https://auth.example.com",
+      }).clientId,
+    ).toBe("dyn");
+    expect(() =>
+      resolveStoredMcpClient("https://other.example.com", {
+        kind: "pre-registered",
+        clientId: "pre",
+        issuer: "https://auth.example.com",
+      }),
+    ).toThrow(/re-register/);
+  });
+});
+
+describe("authorization response iss", () => {
+  test("requires an exact iss match before the code can be read", () => {
+    const params = new URLSearchParams({
+      code: "auth-code",
+      iss: "https://auth.example.com",
+      error: "access_denied",
+    });
+    expect(() =>
+      readAuthorizationCallback(params, {
+        recordedIssuer: "https://auth.example.com/",
+      }),
+    ).toThrow(/does not match/);
+    try {
+      readAuthorizationCallback(params, {
+        recordedIssuer: "https://auth.example.com/",
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(OAuthDiscoveryError);
+      expect((error as Error).message).not.toContain("access_denied");
+    }
+    expect(
+      readAuthorizationCallback(new URLSearchParams({ code: "auth-code" }), {
+        recordedIssuer: "https://auth.example.com",
+      }),
+    ).toEqual({ code: "auth-code" });
+  });
+
+  test("rejects a missing iss only when the authorization server requires it", () => {
+    assertAuthorizationIssuer({
+      recordedIssuer: "https://auth.example.com",
+    });
+    expect(() =>
+      assertAuthorizationIssuer({
+        recordedIssuer: "https://auth.example.com",
+        iss: "",
+      }),
+    ).toThrow(/does not match/);
+    expect(() =>
+      readAuthorizationCallback(
+        new URLSearchParams({ error: "access_denied", code: "auth-code" }),
+        {
+          recordedIssuer: "https://auth.example.com",
+          authorizationResponseIssParameterSupported: true,
+        },
+      ),
+    ).toThrow(/omitted iss/);
+    expect(() =>
+      readAuthorizationCallback(
+        new URLSearchParams({
+          iss: "https://auth.example.com",
+          error: "access_denied",
+        }),
+        { recordedIssuer: "https://auth.example.com" },
+      ),
+    ).toThrow(/rejected the request/);
+  });
+});
+
+describe("cross-origin authorization metadata", () => {
+  test("does not add offline_access when the resource only advertised read", async () => {
+    const resource = "https://mcp.evil.example/mcp";
+    const attacker = "https://attacker.example";
+    const { fetchImpl } = fakeFetch({
+      "https://mcp.evil.example/.well-known/oauth-protected-resource/mcp": {
+        status: 200,
+        body: {
+          resource,
+          authorization_servers: [attacker],
+          scopes_supported: ["read"],
+        },
+      },
+      "https://attacker.example/.well-known/oauth-authorization-server": {
+        status: 200,
+        body: {
+          issuer: attacker,
+          authorization_endpoint: "https://idp.honest.example/authorize",
+          token_endpoint: `${attacker}/token`,
+          code_challenge_methods_supported: ["S256"],
+          scopes_supported: ["read", "offline_access"],
+        },
+      },
+    });
+    const entry = await discoverMcpLoginEntry({
+      resourceUrl: resource,
+      fetchImpl,
+    });
+    expect(entry.authorizationServer.issuer).toBe(attacker);
+    expect(entry.authorizationServer.authorizationEndpoint).toBe(
+      "https://idp.honest.example/authorize",
+    );
+    expect(entry.authorizationServer.tokenEndpoint).toBe(`${attacker}/token`);
+    expect(entry.resourceScopesSupported).toEqual(["read"]);
+    expect(selectMcpScopes({ entry })).toEqual(["read"]);
+    expect(
+      mcpClientConfig(entry, {
+        clientId: "https://client.example/client.json",
+        redirectUri: "http://127.0.0.1:18080/callback",
+      }).scopes,
+    ).toEqual(["read"]);
   });
 });
 

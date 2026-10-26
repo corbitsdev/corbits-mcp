@@ -1,4 +1,6 @@
-import type { FetchLike } from "@intx/harness";
+import type { FetchLike } from "./auth/http.js";
+import { assertOAuthUrl, assertRedirectUri } from "./auth/http.js";
+import { parseMcpAuthChallenge } from "./auth/challenge.js";
 import { type } from "arktype";
 
 import {
@@ -39,6 +41,8 @@ const AuthorizationServerMetadata = type({
   "scopes_supported?": "string[]",
   "token_endpoint_auth_methods_supported?": "string[]",
   "code_challenge_methods_supported?": "string[]",
+  "client_id_metadata_document_supported?": "boolean",
+  "authorization_response_iss_parameter_supported?": "boolean",
 });
 
 // RFC 7591 §3.2.1 — registration response, narrowed to the assigned client id
@@ -46,7 +50,7 @@ const AuthorizationServerMetadata = type({
 // the request (e.g. drop refresh_token, trim scope); callers that need to
 // persist what was granted read these instead of assuming the request stuck.
 const ClientRegistrationResponse = type({
-  client_id: "string",
+  client_id: "string > 0",
   "grant_types?": "string[]",
   "scope?": "string",
 });
@@ -61,6 +65,10 @@ export type McpAuthorizationServer = {
   scopesSupported?: readonly string[];
   tokenEndpointAuthMethodsSupported?: readonly string[];
   codeChallengeMethodsSupported?: readonly string[];
+  /** Present only when the server sent `client_id_metadata_document_supported`. */
+  clientIdMetadataDocumentSupported?: boolean;
+  /** Present only when the server sent `authorization_response_iss_parameter_supported`. */
+  authorizationResponseIssParameterSupported?: boolean;
 };
 
 // A login entry derived from a resource URL: everything the host needs to
@@ -72,12 +80,18 @@ export type McpLoginEntry = {
   // The protected resource's own `scopes_supported` (RFC 9728 §2), if it
   // published one. Distinct from the authorization server's scopes_supported.
   resourceScopesSupported?: readonly string[];
+  /** Scope required by the actual MCP challenge, ahead of PRM defaults. */
+  challengeScope?: string;
 };
 
 export type DiscoverMcpLoginEntryOptions = {
   resourceUrl: string;
   fetchImpl?: FetchLike;
   timeoutMs?: number;
+  /** Challenge retained from the actual MCP 401/403 response. */
+  wwwAuthenticate?: string;
+  /** Pre-PRM compatibility only; modern MCP requires protected-resource metadata. */
+  allowLegacyAuthorizationServerFallback?: boolean;
 };
 
 export type RegisterMcpClientOptions = {
@@ -88,6 +102,13 @@ export type RegisterMcpClientOptions = {
   // §2), used to decide whether to request refresh_token. Omit when unknown.
   grantTypesSupported?: readonly string[];
   scope?: string;
+  /**
+   * OIDC defaults an omitted `application_type` to `"web"`, which rejects
+   * loopback redirect URIs. Loopback and other public clients use `"native"`.
+   */
+  applicationType?: "native" | "web";
+  /** Recorded on the result so the caller can key the credential by issuer. */
+  issuer?: string;
   fetchImpl?: FetchLike;
   timeoutMs?: number;
 };
@@ -98,6 +119,36 @@ export type McpClientRegistration = {
   clientId: string;
   grantTypes: string[];
   scope?: string;
+  /** Set when `registerMcpClient` was given an issuer to persist with the credential. */
+  issuer?: string;
+};
+
+export type McpClientIdMetadataDocument = {
+  client_id: string;
+  client_name: string;
+  redirect_uris: string[];
+  grant_types: string[];
+  response_types: ["code"];
+  token_endpoint_auth_method: "none";
+};
+
+export type McpClientRegistrationPlan =
+  | { mechanism: "pre-registered"; clientId: string }
+  | { mechanism: "client-id-metadata"; clientId: string }
+  | { mechanism: "dynamic"; registrationEndpoint: string };
+
+export type StoredMcpClient = {
+  kind: "cimd" | "dynamic" | "pre-registered";
+  clientId: string;
+  /** Required for `dynamic` and `pre-registered`. CIMD credentials are portable. */
+  issuer?: string;
+};
+
+export type AuthorizationIssuerOptions = {
+  recordedIssuer: string;
+  /** Absent when the authorization response omitted `iss`. An empty string is present. */
+  iss?: string;
+  authorizationResponseIssParameterSupported?: boolean;
 };
 
 export type McpClientConfigOptions = {
@@ -148,31 +199,24 @@ function wellKnownUrl(raw: string, suffix: string): string {
   return parsed.toString();
 }
 
-// RFC 8414 §3: the issuer a well-known URL was derived from, with the same
-// trailing-slash normalization `wellKnownUrl` applies.
-function normalizedIssuer(raw: string): string {
-  const parsed = new URL(raw);
-  const path =
-    parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/$/, "");
-  return `${parsed.origin}${path}`;
-}
-
 async function getJson(
   url: string,
   fetchImpl: FetchLike,
   timeoutMs: number,
 ): Promise<Response> {
+  assertOAuthUrl(url);
   let res: Response;
   try {
     res = await fetchImpl(url, {
+      redirect: "error",
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(timeoutMs),
     });
-  } catch (error) {
-    throw new OAuthDiscoveryError(
-      `request to ${url} failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+  } catch {
+    throw new OAuthDiscoveryError("OAuth metadata request failed");
   }
+  if (res.redirected || (res.status >= 300 && res.status < 400))
+    throw new OAuthDiscoveryError("OAuth metadata redirect refused");
   return res;
 }
 
@@ -234,66 +278,87 @@ export async function discoverMcpLoginEntry(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const resourceUrl = opts.resourceUrl;
-  try {
-    new URL(resourceUrl);
-  } catch {
-    throw new OAuthDiscoveryError(`not a valid URL: ${resourceUrl}`);
-  }
-
+  const resource = assertOAuthUrl(resourceUrl);
+  const challenge = parseMcpAuthChallenge(opts.wwwAuthenticate);
+  const resourceUrls =
+    challenge?.resourceMetadata !== undefined
+      ? [challenge.resourceMetadata]
+      : [
+          ...new Set([
+            wellKnownUrl(resourceUrl, "oauth-protected-resource"),
+            `${resource.origin}/.well-known/oauth-protected-resource`,
+          ]),
+        ];
   let issuer: string | undefined;
   let resourceScopesSupported: readonly string[] | undefined;
-  const resourceMetadataUrl = wellKnownUrl(
-    resourceUrl,
-    "oauth-protected-resource",
-  );
-  const resourceRes = await getJson(resourceMetadataUrl, fetchImpl, timeoutMs);
-  if (resourceRes.ok) {
+  for (const resourceMetadataUrl of resourceUrls) {
+    const resourceRes = await getJson(
+      resourceMetadataUrl,
+      fetchImpl,
+      timeoutMs,
+    );
+    if (resourceRes.status === 404 && challenge?.resourceMetadata === undefined)
+      continue;
+    if (!resourceRes.ok)
+      throw badStatus(resourceMetadataUrl, resourceRes.status);
     const payload = ProtectedResourceMetadata(
       await readJson(resourceRes, resourceMetadataUrl),
     );
     if (payload instanceof type.errors)
-      throw new OAuthDiscoveryError(
-        `protected-resource metadata at ${resourceMetadataUrl} is malformed: ${payload.summary}`,
-      );
+      throw new OAuthDiscoveryError("Malformed protected-resource metadata");
     if (payload.resource !== resourceUrl)
       throw new OAuthDiscoveryError(
-        `protected-resource metadata resource mismatch: expected ${resourceUrl}, got ${payload.resource}.`,
+        "protected-resource metadata resource mismatch",
       );
     issuer = payload.authorization_servers?.[0];
     if (issuer === undefined)
       throw new OAuthDiscoveryError(
-        `protected-resource metadata at ${resourceMetadataUrl} names no authorization server.`,
+        "Protected-resource metadata names no authorization server",
       );
+    for (const candidate of payload.authorization_servers ?? [])
+      assertOAuthUrl(candidate, true);
     resourceScopesSupported = payload.scopes_supported;
-  } else if (resourceRes.status !== 404) {
-    throw badStatus(resourceMetadataUrl, resourceRes.status);
+    break;
   }
-
-  // No protected-resource document: the resource itself may serve
-  // authorization-server metadata (some MCP servers do).
-  const asMetadataUrl =
-    issuer === undefined
-      ? wellKnownUrl(resourceUrl, "oauth-authorization-server")
-      : wellKnownUrl(issuer, "oauth-authorization-server");
-  const asRes = await getJson(asMetadataUrl, fetchImpl, timeoutMs);
-  if (!asRes.ok) throw badStatus(asMetadataUrl, asRes.status);
-  const metadata = AuthorizationServerMetadata(
-    await readJson(asRes, asMetadataUrl),
-  );
-  if (metadata instanceof type.errors)
-    throw new OAuthDiscoveryError(
-      `authorization-server metadata at ${asMetadataUrl} is malformed: ${metadata.summary}`,
+  if (issuer === undefined) {
+    if (opts.allowLegacyAuthorizationServerFallback !== true)
+      throw new OAuthDiscoveryError("Protected-resource metadata not found");
+    issuer = resourceUrl;
+  }
+  const issuerUrl = assertOAuthUrl(issuer, true);
+  const metadataUrls = [
+    ...new Set([
+      wellKnownUrl(issuer, "oauth-authorization-server"),
+      wellKnownUrl(issuer, "openid-configuration"),
+      `${issuerUrl.origin}${issuerUrl.pathname.replace(/\/$/, "")}/.well-known/openid-configuration`,
+    ]),
+  ];
+  let metadata: typeof AuthorizationServerMetadata.infer | undefined;
+  let asMetadataUrl = metadataUrls[0]!;
+  for (const candidate of metadataUrls) {
+    asMetadataUrl = candidate;
+    const response = await getJson(candidate, fetchImpl, timeoutMs);
+    if (response.status === 404) continue;
+    if (!response.ok) throw badStatus(candidate, response.status);
+    const parsed = AuthorizationServerMetadata(
+      await readJson(response, candidate),
     );
-  // RFC 8414 §3.3: metadata must name the issuer it was fetched for. In the
-  // fallback that issuer is the one the resource URL itself identifies.
-  const expectedIssuer = issuer ?? normalizedIssuer(resourceUrl);
-  if (
-    !URL.canParse(metadata.issuer) ||
-    normalizedIssuer(metadata.issuer) !== normalizedIssuer(expectedIssuer)
-  )
-    throw new OAuthDiscoveryError(
-      `authorization-server metadata issuer mismatch: expected ${expectedIssuer}, got ${metadata.issuer}.`,
-    );
+    if (parsed instanceof type.errors)
+      throw new OAuthDiscoveryError("Malformed authorization-server metadata");
+    if (parsed.issuer !== issuer)
+      throw new OAuthDiscoveryError(
+        "authorization-server metadata issuer mismatch",
+      );
+    assertOAuthUrl(parsed.issuer, true);
+    assertOAuthUrl(parsed.authorization_endpoint);
+    assertOAuthUrl(parsed.token_endpoint);
+    if (parsed.registration_endpoint !== undefined)
+      assertOAuthUrl(parsed.registration_endpoint);
+    metadata = parsed;
+    break;
+  }
+  if (metadata === undefined)
+    throw new OAuthDiscoveryError("Authorization-server metadata not found");
 
   assertSupportsS256(asMetadataUrl, metadata.code_challenge_methods_supported);
   assertSupportsPublicClients(
@@ -318,10 +383,17 @@ export async function discoverMcpLoginEntry(
   if (metadata.code_challenge_methods_supported !== undefined)
     authorizationServer.codeChallengeMethodsSupported =
       metadata.code_challenge_methods_supported;
+  if (metadata.client_id_metadata_document_supported !== undefined)
+    authorizationServer.clientIdMetadataDocumentSupported =
+      metadata.client_id_metadata_document_supported;
+  if (metadata.authorization_response_iss_parameter_supported !== undefined)
+    authorizationServer.authorizationResponseIssParameterSupported =
+      metadata.authorization_response_iss_parameter_supported;
 
   const entry: McpLoginEntry = { resourceUrl, authorizationServer };
   if (resourceScopesSupported !== undefined)
     entry.resourceScopesSupported = resourceScopesSupported;
+  if (challenge?.scope !== undefined) entry.challengeScope = challenge.scope;
   return entry;
 }
 
@@ -370,12 +442,17 @@ export async function registerMcpClient(
 ): Promise<McpClientRegistration> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  assertOAuthUrl(opts.registrationEndpoint);
+  for (const uri of opts.redirectUris) assertRedirectUri(uri);
+  if (opts.redirectUris.length === 0)
+    throw new OAuthDiscoveryError("at least one redirect URI is required");
   const requestedGrantTypes = grantTypesToRequest(opts.grantTypesSupported);
 
   let res: Response;
   try {
     res = await fetchImpl(opts.registrationEndpoint, {
       method: "POST",
+      redirect: "error",
       headers: {
         "content-type": "application/json",
         accept: "application/json",
@@ -386,26 +463,15 @@ export async function registerMcpClient(
         grant_types: requestedGrantTypes,
         response_types: ["code"],
         token_endpoint_auth_method: "none",
+        application_type: opts.applicationType ?? "native",
         scope: opts.scope,
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });
-  } catch (error) {
-    throw new OAuthDiscoveryError(
-      `registration request to ${opts.registrationEndpoint} failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+  } catch {
+    throw new OAuthDiscoveryError("client registration request failed");
   }
-  if (!res.ok) {
-    let detail = "";
-    try {
-      detail = await res.text();
-    } catch {
-      // Non-2xx is the error; the body is optional detail.
-    }
-    throw new OAuthDiscoveryError(
-      `registration endpoint ${opts.registrationEndpoint} returned status ${String(res.status)}${detail ? `: ${detail}` : ""}`,
-    );
-  }
+  if (!res.ok) throw badStatus(opts.registrationEndpoint, res.status);
   const payload = ClientRegistrationResponse(
     await readJson(res, opts.registrationEndpoint),
   );
@@ -420,7 +486,257 @@ export async function registerMcpClient(
     grantTypes: grantedGrantTypes(payload.grant_types, requestedGrantTypes),
   };
   if (scope !== undefined) registration.scope = scope;
+  if (opts.issuer !== undefined) registration.issuer = opts.issuer;
   return registration;
+}
+
+function assertClientMetadataUrl(metadataUrl: string): void {
+  // WHATWG URL parsing repairs missing/extra authority slashes and normalizes
+  // characters. A CIMD identifier must instead have an explicit HTTPS authority
+  // so raw-path validation cannot silently miss a parser-repaired path.
+  const rawUrl = /^https:\/\/([^/?#]+)(\/[^?#]*)?(?:\?[^#]*)?$/i.exec(
+    metadataUrl,
+  );
+  if (
+    rawUrl === null ||
+    /[\s\\]/.test(metadataUrl) ||
+    Array.from(metadataUrl).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x20 || code === 0x7f;
+    })
+  ) {
+    throw new OAuthDiscoveryError(
+      "client metadata URL must use explicit absolute HTTPS authority syntax without whitespace, controls or backslashes",
+    );
+  }
+  assertOAuthUrl(metadataUrl);
+  let url: URL;
+  try {
+    url = new URL(metadataUrl);
+  } catch {
+    throw new OAuthDiscoveryError(
+      `client metadata URL is not a valid URL: ${metadataUrl}`,
+    );
+  }
+  if (url.protocol !== "https:")
+    throw new OAuthDiscoveryError(
+      `client metadata URL must use https: ${metadataUrl}`,
+    );
+  if (url.pathname === "" || url.pathname === "/")
+    throw new OAuthDiscoveryError(
+      `client metadata URL must contain a path: ${metadataUrl}`,
+    );
+  if (url.hash !== "" || url.username !== "" || url.password !== "")
+    throw new OAuthDiscoveryError(
+      `client metadata URL must not contain a fragment or userinfo: ${metadataUrl}`,
+    );
+  // The URL parser normalizes away "." and ".." path segments, so inspect the
+  // raw path (excluding query/fragment) to refuse dot segments before URL
+  // normalization can hide them, including a terminal segment before "?".
+  const rawPath = rawUrl[2] ?? "";
+  if (rawPath.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment)))
+    throw new OAuthDiscoveryError(
+      `client metadata URL must not contain dot segments: ${metadataUrl}`,
+    );
+}
+
+/**
+ * Build a Client ID Metadata Document whose `client_id` is the document URL.
+ * The caller hosts the returned JSON at that exact URL.
+ */
+export function mcpClientIdMetadataDocument(opts: {
+  metadataUrl: string;
+  clientName: string;
+  redirectUris: readonly string[];
+  grantTypes?: readonly string[];
+}): McpClientIdMetadataDocument {
+  assertClientMetadataUrl(opts.metadataUrl);
+  for (const uri of opts.redirectUris) assertRedirectUri(uri);
+  return {
+    client_id: opts.metadataUrl,
+    client_name: opts.clientName,
+    redirect_uris: [...opts.redirectUris],
+    grant_types: [...(opts.grantTypes ?? ["authorization_code"])],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  };
+}
+
+/**
+ * Registration priority: pre-registered client id, then a Client ID Metadata
+ * Document when the authorization server advertises support and a metadata
+ * URL is available, then RFC 7591. Anything else is an error.
+ */
+export function preferredMcpClientRegistration(opts: {
+  authorizationServer: Pick<
+    McpAuthorizationServer,
+    "clientIdMetadataDocumentSupported" | "registrationEndpoint"
+  >;
+  preRegisteredClientId?: string;
+  clientMetadataUrl?: string;
+}): McpClientRegistrationPlan {
+  if (
+    opts.preRegisteredClientId !== undefined &&
+    opts.preRegisteredClientId.length > 0
+  ) {
+    return {
+      mechanism: "pre-registered",
+      clientId: opts.preRegisteredClientId,
+    };
+  }
+  if (
+    opts.authorizationServer.clientIdMetadataDocumentSupported === true &&
+    opts.clientMetadataUrl !== undefined
+  ) {
+    assertClientMetadataUrl(opts.clientMetadataUrl);
+    return {
+      mechanism: "client-id-metadata",
+      clientId: opts.clientMetadataUrl,
+    };
+  }
+  const registrationEndpoint = opts.authorizationServer.registrationEndpoint;
+  if (registrationEndpoint !== undefined)
+    return { mechanism: "dynamic", registrationEndpoint };
+  throw new OAuthDiscoveryError(
+    "authorization server offers no usable client registration mechanism",
+  );
+}
+
+/**
+ * CIMD client ids are portable across issuers. Dynamic and pre-registered
+ * credentials are keyed by issuer and must be registered again when it changes.
+ * Issuers are compared exactly, including trailing slashes.
+ */
+export function resolveStoredMcpClient(
+  issuer: string,
+  stored: StoredMcpClient,
+): { clientId: string } {
+  if (stored.kind === "cimd") {
+    assertClientMetadataUrl(stored.clientId);
+    return { clientId: stored.clientId };
+  }
+  if (stored.issuer === undefined || stored.issuer !== issuer) {
+    throw new OAuthDiscoveryError(
+      `stored ${stored.kind} client credentials are for a different authorization server; re-register`,
+    );
+  }
+  return { clientId: stored.clientId };
+}
+
+/**
+ * RFC 9207 via the MCP authorization spec. A present `iss` (including an
+ * empty string) must equal the recorded issuer with no normalization. When
+ * the server advertises `authorization_response_iss_parameter_supported`, a
+ * missing `iss` is rejected. Otherwise a missing `iss` is allowed.
+ */
+export function assertAuthorizationIssuer(
+  opts: AuthorizationIssuerOptions,
+): void {
+  if (opts.iss === undefined) {
+    if (opts.authorizationResponseIssParameterSupported === true)
+      throw new OAuthDiscoveryError(
+        "authorization response omitted iss but the authorization server requires it",
+      );
+    return;
+  }
+  if (opts.iss !== opts.recordedIssuer)
+    throw new OAuthDiscoveryError(
+      "authorization response iss does not match the authorization server issuer",
+    );
+}
+
+function callbackField(
+  params: URLSearchParams | Record<string, string | undefined | null>,
+  key: string,
+): string | undefined {
+  if (params instanceof URLSearchParams) {
+    if (params.getAll(key).length > 1)
+      throw new OAuthDiscoveryError(
+        "duplicate authorization response parameter",
+      );
+    if (!params.has(key)) return undefined;
+    return params.get(key) ?? "";
+  }
+  if (!Object.prototype.hasOwnProperty.call(params, key)) return undefined;
+  const value = params[key];
+  if (value === undefined || value === null) return undefined;
+  return value;
+}
+
+/** Validate callback provenance without acting on code or terminal error fields.
+ * Callers may consume a one-use login only after this and their state check pass. */
+export function assertAuthorizationCallbackIssuer(
+  params: URLSearchParams | Record<string, string | undefined | null>,
+  opts: Omit<AuthorizationIssuerOptions, "iss">,
+): void {
+  const iss = callbackField(params, "iss");
+  const issuerOpts: AuthorizationIssuerOptions = {
+    recordedIssuer: opts.recordedIssuer,
+  };
+  if (iss !== undefined) issuerOpts.iss = iss;
+  if (opts.authorizationResponseIssParameterSupported !== undefined)
+    issuerOpts.authorizationResponseIssParameterSupported =
+      opts.authorizationResponseIssParameterSupported;
+  assertAuthorizationIssuer(issuerOpts);
+}
+
+function sameOrigin(endpoint: string, issuer: string): boolean {
+  try {
+    return new URL(endpoint).origin === new URL(issuer).origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Mix-up defense for metadata that names an authorization or token endpoint
+ * on a different origin than the issuer. RFC 9207 allows a missing `iss` when
+ * the server does not advertise `authorization_response_iss_parameter_supported`,
+ * but that would send the code and PKCE verifier to whichever token endpoint
+ * the metadata named. Cross-origin endpoints require a present `iss` equal to
+ * the recorded issuer. Same-origin issuers keep the ordinary missing-`iss` rule.
+ */
+export function assertCrossOriginAuthorizationIssuer(
+  params: URLSearchParams | Record<string, string | undefined | null>,
+  server: Pick<
+    McpAuthorizationServer,
+    "issuer" | "authorizationEndpoint" | "tokenEndpoint"
+  >,
+): void {
+  if (
+    sameOrigin(server.authorizationEndpoint, server.issuer) &&
+    sameOrigin(server.tokenEndpoint, server.issuer)
+  )
+    return;
+  const iss = callbackField(params, "iss");
+  if (iss === undefined || iss !== server.issuer)
+    throw new OAuthDiscoveryError(
+      "cross-origin authorization endpoints require a matching iss",
+    );
+}
+
+/**
+ * Read an authorization callback. `iss` is checked before `error` or `code`
+ * is acted on, and this function does not redeem the code.
+ */
+export function readAuthorizationCallback(
+  params: URLSearchParams | Record<string, string | undefined | null>,
+  opts: {
+    recordedIssuer: string;
+    authorizationResponseIssParameterSupported?: boolean;
+  },
+): { code: string } {
+  assertAuthorizationCallbackIssuer(params, opts);
+  const error = callbackField(params, "error");
+  if (error !== undefined) {
+    throw new OAuthDiscoveryError("authorization server rejected the request");
+  }
+  const code = callbackField(params, "code");
+  if (code === undefined || code.length === 0)
+    throw new OAuthDiscoveryError(
+      "authorization response did not include a code",
+    );
+  return { code };
 }
 
 // MCP authorization spec, "Scope Selection Strategy": priority order is (1)
@@ -430,15 +746,20 @@ export async function registerMcpClient(
 // spec's "Refresh Tokens" section: `wantRefresh` defaults to true (this
 // package always registers for refresh_token, see grantTypesToRequest), so
 // offline_access is added whenever the authorization server's own
-// `scopes_supported` lists it; pass `wantRefresh: false` to opt out.
+// `scopes_supported` lists it and its authorization endpoint shares the
+// issuer origin. A cross-origin authorization endpoint is not trusted to
+// widen the resource's scopes. Pass `wantRefresh: false` to opt out.
 export function selectMcpScopes(opts: SelectMcpScopesOptions): string[] {
   const priorityScopes = selectPriorityScopes(opts);
   return addOfflineAccessScope(priorityScopes, opts);
 }
 
 function selectPriorityScopes(opts: SelectMcpScopesOptions): string[] {
-  if (opts.challengeScope !== undefined)
-    return opts.challengeScope.split(" ").filter((scope) => scope.length > 0);
+  const challengeScope = opts.challengeScope ?? opts.entry.challengeScope;
+  if (challengeScope !== undefined)
+    return [
+      ...new Set(challengeScope.split(" ").filter((scope) => scope.length > 0)),
+    ];
   const resourceScopes = opts.entry.resourceScopesSupported;
   if (resourceScopes !== undefined) return [...resourceScopes];
   return [];
@@ -449,6 +770,13 @@ function addOfflineAccessScope(
   opts: SelectMcpScopesOptions,
 ): string[] {
   if (opts.wantRefresh === false) return scopes;
+  if (
+    !sameOrigin(
+      opts.entry.authorizationServer.authorizationEndpoint,
+      opts.entry.authorizationServer.issuer,
+    )
+  )
+    return scopes;
   const authServerScopes = opts.entry.authorizationServer.scopesSupported;
   if (authServerScopes === undefined) return scopes;
   if (!authServerScopes.includes("offline_access")) return scopes;
@@ -468,6 +796,28 @@ export function mcpClientConfig(
   entry: McpLoginEntry,
   opts: McpClientConfigOptions,
 ): OAuthClientConfig {
+  assertOAuthUrl(entry.resourceUrl);
+  assertOAuthUrl(entry.authorizationServer.issuer, true);
+  assertOAuthUrl(entry.authorizationServer.authorizationEndpoint);
+  assertOAuthUrl(entry.authorizationServer.tokenEndpoint);
+  assertRedirectUri(opts.redirectUri);
+  const reserved = new Set([
+    "response_type",
+    "client_id",
+    "redirect_uri",
+    "state",
+    "code_challenge",
+    "code_challenge_method",
+    "scope",
+  ]);
+  if (
+    Object.keys(opts.extraAuthorizeParams ?? {}).some((key) =>
+      reserved.has(key),
+    )
+  )
+    throw new OAuthDiscoveryError(
+      "extra authorization parameters cannot override security parameters",
+    );
   const scopeOptions: SelectMcpScopesOptions = {
     entry,
     wantRefresh: opts.wantRefresh ?? true,
@@ -481,6 +831,7 @@ export function mcpClientConfig(
   extraAuthorizeParams.resource = entry.resourceUrl;
   return {
     clientId: opts.clientId,
+    resource: entry.resourceUrl,
     authorizeUrl: entry.authorizationServer.authorizationEndpoint,
     tokenUrl: entry.authorizationServer.tokenEndpoint,
     redirectUri: opts.redirectUri,

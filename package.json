@@ -22,7 +22,9 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs",
+    "examples"
   ],
   "type": "module",
   "sideEffects": false,
@@ -38,6 +40,26 @@
     "./hub": {
       "types": "./dist/hub/index.d.ts",
       "default": "./dist/hub/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./interchange/client": {
+      "types": "./dist/interchange/client.d.ts",
+      "default": "./dist/interchange/client.js"
+    },
+    "./interchange/server": {
+      "types": "./dist/interchange/server.d.ts",
+      "default": "./dist/interchange/server.js"
+    },
+    "./server/task-store": {
+      "types": "./dist/extensions/tasks/file-store.d.ts",
+      "default": "./dist/extensions/tasks/file-store.js"
     }
   },
   "publishConfig": {
@@ -52,15 +74,18 @@
     "format:check": "oxfmt --check",
     "test": "bun test src --pass-with-no-tests",
     "test:e2e": "bun test e2e",
-    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test"
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test",
+    "test:package": "bun test e2e/package.test.ts"
   },
   "dependencies": {
-    "@corbits/oauth-core": "^0.3.0",
     "@intx/types": "^0.5.0",
-    "arktype": "^2.2.3"
+    "ajv": "^8.17.1",
+    "arktype": "^2.2.3",
+    "yaml": "2.8.1"
   },
   "devDependencies": {
     "@corbits/credential-http": "0.1.0",
+    "@corbits/oauth-core": "0.3.0",
     "@intx/agent": "0.5.0",
     "@intx/authz": "0.5.0",
     "@intx/db": "0.5.0",
@@ -77,6 +102,7 @@
   },
   "peerDependencies": {
     "@corbits/credential-http": "^0.1.0",
+    "@corbits/oauth-core": "^0.3.0",
     "@intx/agent": "^0.5.0",
     "@intx/db": "^0.5.0",
     "@intx/harness": "^0.4.0 || ^0.5.0",
@@ -98,6 +124,15 @@
       "optional": true
     },
     "hono": {
+      "optional": true
+    },
+    "@intx/agent": {
+      "optional": true
+    },
+    "@intx/harness": {
+      "optional": true
+    },
+    "@corbits/oauth-core": {
       "optional": true
     }
   },

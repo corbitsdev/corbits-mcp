@@ -1,7 +1,9 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, afterEach, spyOn } from "bun:test";
 import { MCP_NO_TOKEN_SENTINEL } from "@corbits/credential-http";
 import type { TenantEnv } from "@intx/hub-api";
 import { Hono } from "hono";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 import {
   discoverMcpServer,
@@ -31,6 +33,7 @@ function appWith(
     readonly expiresAt?: Date | null;
     readonly onError?: (error: unknown) => void;
     readonly allowLoopback?: boolean;
+    readonly onWhere?: (clause: SQL) => void;
   } = {},
 ): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -57,12 +60,15 @@ function appWith(
     select: () => ({
       from: () => ({
         innerJoin: () => ({
-          where: (_clause: unknown) => ({
-            // The stub cannot read drizzle's clause, so the id is threaded
-            // through the only credential the test registers.
-            limit: () =>
-              Promise.resolve(row(Object.keys(secrets)[0] ?? "none")),
-          }),
+          where: (clause: SQL) => {
+            opts.onWhere?.(clause);
+            return {
+              // The stub cannot read drizzle's clause, so the id is threaded
+              // through the only credential the test registers.
+              limit: () =>
+                Promise.resolve(row(Object.keys(secrets)[0] ?? "none")),
+            };
+          },
         }),
       }),
     }),
@@ -385,20 +391,114 @@ describe("POST /mcp/discover", () => {
     expect(handle.requestsSeen).toHaveLength(0);
   });
 
-  test("an upstream status is not echoed", async () => {
-    const server = Bun.serve({
-      port: 0,
-      fetch: () => new Response("<html>admin</html>", { status: 403 }),
-    });
+  test("an upstream status is not echoed even when the safe origin contains 403", async () => {
+    // No listener or DNS lookup: reproduce a benign port containing the status
+    // digits deterministically, without reserving a collision-prone fixed port.
+    const url = new URL("https://mcp403.example:64038/admin");
+    const fetchImpl = Object.assign(
+      async (input: string | URL | Request) => {
+        expect(input instanceof Request ? input.url : String(input)).toBe(
+          url.href,
+        );
+        return new Response("<html>admin</html>", { status: 403 });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const upstream = spyOn(globalThis, "fetch").mockImplementation(fetchImpl);
+    const errors: unknown[] = [];
     try {
-      const { status, json } = await post(appWith({}), {
-        url: new URL("/admin", server.url).href,
-      });
+      const { status, json } = await post(
+        appWith({}, { onError: (error) => errors.push(error) }),
+        {
+          url: url.href,
+        },
+      );
+      expect(upstream).toHaveBeenCalled();
       expect(status).toBe(422);
-      expect(String(json["error"])).toEndWith("the server refused the request");
-      expect(String(json["error"])).not.toContain("403");
+      expect(json).toEqual({
+        error: `the MCP server at ${url.origin} could not be discovered: the server refused the request`,
+      });
+      expect(
+        errors.map((error) =>
+          error instanceof Error ? error.message : String(error),
+        ),
+      ).toEqual(["the server refused the request"]);
     } finally {
-      await server.stop(true);
+      upstream.mockRestore();
     }
   });
+});
+
+test("peer JSON-RPC error text cannot reflect a bearer through response or onError", async () => {
+  const secret = "reflected-sensitive-token";
+  const observed: unknown[] = [];
+  const peer = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const payload = (await request.json()) as { id: string | number };
+      return Response.json({
+        jsonrpc: "2.0",
+        id: payload.id,
+        error: { code: -32603, message: request.headers.get("authorization") },
+      });
+    },
+  });
+  try {
+    const url = `http://127.0.0.1:${peer.port}/mcp`;
+    const response = await post(
+      appWith(
+        { cred_1: secret },
+        { apiBaseUrl: url, onError: (error) => observed.push(error) },
+      ),
+      { url, credentialId: "cred_1" },
+    );
+    expect(response.status).toBe(422);
+    expect(JSON.stringify(response.json)).not.toContain(secret);
+    expect(observed.map(String).join(" ")).not.toContain(secret);
+  } finally {
+    await peer.stop(true);
+  }
+});
+
+test("stored OAuth resource binding cannot be overridden by an origin allowance", async () => {
+  let requested = false;
+  await expect(
+    discoverMcpServer({
+      url: "https://mcp.example/other",
+      credential: {
+        secret: "token",
+        origin: "https://mcp.example",
+        resource: "https://mcp.example/mcp",
+      },
+      fetch: async () => {
+        requested = true;
+        return Response.json({});
+      },
+    }),
+  ).rejects.toThrow(/resource binding/);
+  expect(requested).toBe(false);
+});
+
+test("credential lookup binds both selected credential and authenticated tenant", async () => {
+  let checked = false;
+  const app = appWith(
+    {},
+    {
+      onWhere(clause) {
+        const query = new PgDialect().sqlToQuery(clause);
+        expect(query.params).toEqual(["foreign-credential", "tnt_1"]);
+        expect(query.sql).toContain('"credential"."tenant_id"');
+        checked = true;
+      },
+    },
+  );
+  expect(
+    (
+      await post(app, {
+        url: "https://mcp.example/mcp",
+        credentialId: "foreign-credential",
+      })
+    ).status,
+  ).toBe(404);
+  expect(checked).toBe(true);
 });

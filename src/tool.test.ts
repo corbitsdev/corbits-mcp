@@ -18,10 +18,10 @@ afterEach(() => {
 });
 
 describe("ask-mark derivation (CL-8392)", () => {
-  const safeTool: McpTool = { name: "echo", inputSchema: {} };
+  const safeTool: McpTool = { name: "echo", inputSchema: { type: "object" } };
   const destructiveTool: McpTool = {
     name: "delete_thing",
-    inputSchema: {},
+    inputSchema: { type: "object" },
     annotations: { destructiveHint: true },
   };
 

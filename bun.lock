@@ -5,12 +5,14 @@
     "": {
       "name": "@corbits/mcp",
       "dependencies": {
-        "@corbits/oauth-core": "^0.3.0",
         "@intx/types": "^0.5.0",
+        "ajv": "^8.17.1",
         "arktype": "^2.2.3",
+        "yaml": "2.8.1",
       },
       "devDependencies": {
         "@corbits/credential-http": "0.1.0",
+        "@corbits/oauth-core": "0.3.0",
         "@intx/agent": "0.5.0",
         "@intx/authz": "0.5.0",
         "@intx/db": "0.5.0",
@@ -27,16 +29,20 @@
       },
       "peerDependencies": {
         "@corbits/credential-http": "^0.1.0",
+        "@corbits/oauth-core": "^0.3.0",
         "@intx/agent": "^0.5.0",
         "@intx/db": "^0.5.0",
-        "@intx/harness": "^0.5.0",
+        "@intx/harness": "^0.4.0 || ^0.5.0",
         "@intx/hub-api": "^0.5.0",
         "drizzle-orm": "^0.45.2",
         "hono": "^4.11.9",
       },
       "optionalPeers": [
         "@corbits/credential-http",
+        "@corbits/oauth-core",
+        "@intx/agent",
         "@intx/db",
+        "@intx/harness",
         "@intx/hub-api",
         "drizzle-orm",
         "hono",
@@ -88,7 +94,7 @@
 
     "@intx/hub-api": ["@intx/hub-api@0.5.0", "", { "dependencies": { "@hono/standard-validator": "^0.2.2", "@intx/agent": "0.5.0", "@intx/authz": "0.5.0", "@intx/crypto": "0.5.0", "@intx/db": "0.5.0", "@intx/hub-common": "0.5.0", "@intx/hub-sessions": "0.5.0", "@intx/log": "0.5.0", "@intx/mime": "0.5.0", "@intx/storage-isogit": "0.5.0", "@intx/types": "0.5.0", "@intx/workflow-deploy": "0.5.0", "arktype": "^2.1.29", "better-auth": "^1.4.18", "drizzle-orm": "^0.45.1", "hono": "^4.11.9", "hono-openapi": "^1.2.0", "isomorphic-git": "^1.27.2", "ssri": "^12.0.0" } }, "sha512-ObyGu0YV9w8g93LA6+a0tjGiI4saM1fwUi7JGiVGRJlQ2imD+iaIE8dyxzUdkeQN/ZmrGIQCdHt1Dg4+c0dQNA=="],
 
-    "@intx/hub-common": ["@intx/hub-common@0.5.0", "", { "dependencies": { "@intx/types": "0.5.0" } }, "sha512-riLxc8a9ZkCaEDUxr3DWlrIaZ/WeLZ9HJmXU9MbcM9TEUfMR68F/EiuSGKwQRFDVH9WwRZB82WN6vuGWbAHksA=="],
+    "@intx/hub-common": ["@intx/hub-common@0.4.0", "", { "dependencies": { "@intx/types": "0.4.0" } }, "sha512-4dcRX3kamqduf1Yil85GVsjXKnAnu6uqSYrAsl4vGpuV6R2DCy7z/PHd+DtIqk6TJrRdW7DtfkNXwSEc3dn2VQ=="],
 
     "@intx/hub-sessions": ["@intx/hub-sessions@0.5.0", "", { "dependencies": { "@intx/agent": "0.5.0", "@intx/crypto": "0.5.0", "@intx/db": "0.5.0", "@intx/hub-common": "0.5.0", "@intx/log": "0.5.0", "@intx/mime": "0.5.0", "@intx/pack-transport": "0.5.0", "@intx/storage-isogit": "0.5.0", "@intx/tool-packaging": "0.5.0", "@intx/types": "0.5.0", "@intx/workflow": "0.5.0", "@intx/workflow-deploy": "0.5.0", "arktype": "^2.1.29", "drizzle-orm": "^0.45.1", "isomorphic-git": "^1.27.2", "tar": "^7.5.1" } }, "sha512-CgcXHnGtIw/Rjdhnry2TOSVvKeUh2x+XXvLJ/hrw86hBocvROUOFOykJ3/63Uft0OHPGKXf1D5AFPyc71P2arQ=="],
 
@@ -598,6 +604,8 @@
 
     "yallist": ["yallist@5.0.0", "", {}, "sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw=="],
 
+    "yaml": ["yaml@2.8.1", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-lcYcMxX2PO9XMGvAJkJ3OsNMw+/7FKes7/hgerGUYWIoWu5j/+YQqcZr5JnPZWzOsEBgMbSbiSTn/dv/69Mkpw=="],
+
     "zod": ["zod@4.6.5", "", {}, "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q=="],
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
@@ -606,9 +614,15 @@
 
     "@corbits/oauth-core/@intx/hub-api": ["@intx/hub-api@0.4.0", "", { "dependencies": { "@hono/standard-validator": "^0.2.2", "@intx/agent": "0.4.0", "@intx/authz": "0.4.0", "@intx/crypto": "0.4.0", "@intx/db": "0.4.0", "@intx/hub-common": "0.4.0", "@intx/hub-sessions": "0.4.0", "@intx/log": "0.4.0", "@intx/mime": "0.4.0", "@intx/storage-isogit": "0.4.0", "@intx/types": "0.4.0", "@intx/workflow-deploy": "0.4.0", "arktype": "^2.1.29", "better-auth": "^1.4.18", "drizzle-orm": "^0.45.1", "hono": "^4.11.9", "hono-openapi": "^1.2.0", "isomorphic-git": "^1.27.2", "ssri": "^12.0.0" } }, "sha512-3Txw7Im38BdRujYeRlxgrzCdvOG1v92556AjNa/6WXSwgXt9Mn2fB4RoQrA6oUHcm10Y94WZh3IjaQsXFl7Qvg=="],
 
-    "@corbits/oauth-core/@intx/hub-common": ["@intx/hub-common@0.4.0", "", { "dependencies": { "@intx/types": "0.4.0" } }, "sha512-4dcRX3kamqduf1Yil85GVsjXKnAnu6uqSYrAsl4vGpuV6R2DCy7z/PHd+DtIqk6TJrRdW7DtfkNXwSEc3dn2VQ=="],
-
     "@corbits/oauth-core/@intx/types": ["@intx/types@0.4.0", "", { "dependencies": { "arktype": "^2.1.29", "semver": "^7.7.2" } }, "sha512-nJ2fcmskMOZNMRfbHs5ueKpCANHNttoL+sZgIoFaVUF/QLpFWfVp0YV72CQAaa9bVv9j5kRSwtSOCCGSlwQ6Dw=="],
+
+    "@intx/db/@intx/hub-common": ["@intx/hub-common@0.5.0", "", { "dependencies": { "@intx/types": "0.5.0" } }, "sha512-riLxc8a9ZkCaEDUxr3DWlrIaZ/WeLZ9HJmXU9MbcM9TEUfMR68F/EiuSGKwQRFDVH9WwRZB82WN6vuGWbAHksA=="],
+
+    "@intx/hub-api/@intx/hub-common": ["@intx/hub-common@0.5.0", "", { "dependencies": { "@intx/types": "0.5.0" } }, "sha512-riLxc8a9ZkCaEDUxr3DWlrIaZ/WeLZ9HJmXU9MbcM9TEUfMR68F/EiuSGKwQRFDVH9WwRZB82WN6vuGWbAHksA=="],
+
+    "@intx/hub-common/@intx/types": ["@intx/types@0.4.0", "", { "dependencies": { "arktype": "^2.1.29", "semver": "^7.7.2" } }, "sha512-nJ2fcmskMOZNMRfbHs5ueKpCANHNttoL+sZgIoFaVUF/QLpFWfVp0YV72CQAaa9bVv9j5kRSwtSOCCGSlwQ6Dw=="],
+
+    "@intx/hub-sessions/@intx/hub-common": ["@intx/hub-common@0.5.0", "", { "dependencies": { "@intx/types": "0.5.0" } }, "sha512-riLxc8a9ZkCaEDUxr3DWlrIaZ/WeLZ9HJmXU9MbcM9TEUfMR68F/EiuSGKwQRFDVH9WwRZB82WN6vuGWbAHksA=="],
 
     "@npmcli/agent/lru-cache": ["lru-cache@11.5.3", "", {}, "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg=="],
 

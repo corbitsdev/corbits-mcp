@@ -18,8 +18,9 @@ import type { Hono, MiddlewareHandler } from "hono";
 
 import {
   McpError,
-  mcpInitialize,
+  mcpConnect,
   mcpListTools,
+  type McpCacheScope,
   type McpTool,
   type McpServerInfo,
 } from "../client.js";
@@ -55,6 +56,8 @@ export type McpCredential = {
   readonly secret: string;
   /** The provider's API origin the secret is pinned to, when it has one. */
   readonly origin?: string;
+  /** Host-stored OAuth audience; extraOrigins never overrides this binding. */
+  readonly resource?: string;
 };
 
 /**
@@ -84,6 +87,7 @@ export async function readCredential(opts: {
       status: credential.status,
       expiresAt: credential.expiresAt,
       apiBaseUrl: provider.apiBaseUrl,
+      metadata: credential.metadata,
     })
     .from(credential)
     .innerJoin(provider, eq(provider.id, credential.providerId))
@@ -102,14 +106,25 @@ export async function readCredential(opts: {
   ) {
     return undefined;
   }
+  const metadata = type({ "oauthResource?": "string > 0" })(row.metadata ?? {});
+  if (metadata instanceof type.errors) return undefined;
+  const resource = metadata.oauthResource;
+  if (resource !== undefined) parseMcpEndpoint(resource);
   const secret = await opts.cipher.decrypt(
     row.secret,
     credentialAad(row.id, "secret"),
   );
-  return row.apiBaseUrl === null
-    ? { secret }
-    : { secret, origin: new URL(row.apiBaseUrl).origin };
+  return {
+    secret,
+    ...(row.apiBaseUrl !== null
+      ? { origin: parseMcpEndpoint(row.apiBaseUrl).origin }
+      : {}),
+    ...(resource !== undefined ? { resource } : {}),
+  };
 }
+
+/** Only this local class is safe to expose; peer McpError text is untrusted. */
+class DiscoveryPolicyError extends McpError {}
 
 const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
 
@@ -119,7 +134,7 @@ function refusingRedirects(inner: FetchLike): FetchLike {
   return async (input, init) => {
     const response = await inner(input, init);
     if (response.status >= 300 && response.status < 400) {
-      throw new McpError(
+      throw new DiscoveryPolicyError(
         `the MCP server answered a ${String(response.status)} redirect; refusing to follow it`,
       );
     }
@@ -133,6 +148,8 @@ const DISCOVERY_TIMEOUT_MS = 30_000;
 export type McpDiscovery = {
   readonly serverInfo: McpServerInfo;
   readonly tools: readonly McpTool[];
+  readonly ttlMs?: number;
+  readonly cacheScope?: McpCacheScope;
 };
 
 /**
@@ -147,6 +164,14 @@ export async function discoverMcpServer(args: {
   readonly timeoutMs?: number;
 }): Promise<McpDiscovery> {
   const target = parseMcpEndpoint(args.url);
+  if (
+    args.credential?.resource !== undefined &&
+    args.credential.resource !== args.url
+  ) {
+    throw new DiscoveryPolicyError(
+      "credential resource binding does not match the MCP endpoint",
+    );
+  }
   const secret = args.credential?.secret;
   const token =
     secret === undefined || secret === MCP_NO_TOKEN_SENTINEL
@@ -154,19 +179,27 @@ export async function discoverMcpServer(args: {
       : secret;
   const origin = token === undefined ? target.origin : args.credential?.origin;
   if (origin === undefined) {
-    throw new McpError("the credential's provider has no API origin to pin to");
+    throw new DiscoveryPolicyError(
+      "the credential's provider has no API origin to pin to",
+    );
   }
   // A secret that is not a valid header value makes fetch throw a message
   // quoting it, so it is refused here with a fixed one.
   if (token !== undefined && !HEADER_VALUE.test(token)) {
-    throw new McpError("the credential's secret is not a valid header value");
+    throw new DiscoveryPolicyError(
+      "the credential's secret is not a valid header value",
+    );
   }
   const extraOrigins = Object.entries(args.extraOrigins ?? {}).flatMap(
-    ([pinned, extra]) => (new URL(pinned).origin === origin ? extra : []),
+    ([pinned, extra]) =>
+      parseMcpEndpoint(pinned).origin === origin ? extra : [],
   );
-  const allowed = [origin, ...extraOrigins.map((o) => new URL(o).origin)];
+  const allowed = [
+    origin,
+    ...extraOrigins.map((o) => parseMcpEndpoint(o).origin),
+  ];
   if (!allowed.includes(target.origin)) {
-    throw new McpError(
+    throw new DiscoveryPolicyError(
       `credential is pinned to ${origin}; refusing cross-origin request to ${target.origin}`,
     );
   }
@@ -183,7 +216,7 @@ export async function discoverMcpServer(args: {
     fetch: pinned,
     timeoutMs: args.timeoutMs ?? DISCOVERY_TIMEOUT_MS,
   };
-  const session = await mcpInitialize(args.url, client);
+  const session = await mcpConnect(args.url, client);
   const tools = await mcpListTools(args.url, { ...client, session });
   return {
     serverInfo: {
@@ -193,6 +226,8 @@ export async function discoverMcpServer(args: {
         : {}),
     },
     tools,
+    ...(tools.ttlMs !== undefined ? { ttlMs: tools.ttlMs } : {}),
+    ...(tools.cacheScope !== undefined ? { cacheScope: tools.cacheScope } : {}),
   };
 }
 
@@ -249,14 +284,14 @@ export function mountMcpDiscovery(
       // as a fetch error, may quote the material the request carried. An
       // upstream status is not echoed, so the route is no port-probing oracle.
       const error =
-        cause instanceof McpError && cause.status === undefined
+        cause instanceof DiscoveryPolicyError
           ? cause
           : new McpError(
               cause instanceof McpError
                 ? "the server refused the request"
                 : "the handshake failed",
             );
-      opts.onError?.(error, { url: body.url });
+      opts.onError?.(error, { url: `${target.origin}${target.pathname}` });
       return c.json(
         {
           error: `the MCP server at ${target.origin} could not be discovered: ${error.message}`,

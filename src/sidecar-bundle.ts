@@ -21,7 +21,7 @@ import { type } from "arktype";
 import {
   DEFAULT_TIMEOUT_MS,
   mcpCallTool,
-  mcpInitialize,
+  mcpConnect,
   type McpClientOptions,
   McpToolSchema,
   type McpTool,
@@ -30,9 +30,18 @@ import {
   assertCatalogNames,
   assertServers,
   isAskExempt,
+  isModelVisible,
   qualifiedName,
   toolDescription,
 } from "./naming.js";
+
+import {
+  assertHostExtensions,
+  hostClientOptions,
+} from "./interchange/client/capabilities.js";
+import { projectToolResult } from "./interchange/client/projection.js";
+import type { McpHostServices } from "./interchange/client/contracts.js";
+export { shapeMcpContent } from "./interchange/client/projection.js";
 
 /** The consumer key a host matches a credential binding against. */
 export const SIDECAR_BUNDLE_ID = "@corbits/mcp/sidecar-bundle";
@@ -75,9 +84,13 @@ export interface McpBoundServer {
 }
 
 export interface McpServersConfig {
+  /** Explicit host lifecycle and presentation services. */
+  readonly host?: McpHostServices;
   readonly servers: readonly McpBoundServer[];
-  /** Per-request bound on `initialize` and `tools/call`; defaults to 60s. */
+  /** Per-request bound on connect and `tools/call`; defaults to 60s. */
   readonly timeoutMs?: number;
+  /** Extension ids advertised on every request. Off unless listed. */
+  readonly extensions?: readonly string[];
 }
 
 const BoundServerSchema = type({
@@ -90,6 +103,7 @@ const BoundServerSchema = type({
 const ConfigSchema = type({
   servers: BoundServerSchema.array(),
   "timeoutMs?": "number > 0",
+  "extensions?": "string[]",
 });
 
 /** Validate at construction: a malformed deploy config is a deploy bug, not a
@@ -112,21 +126,6 @@ function assertConfig(config: McpServersConfig): void {
       `invalid @corbits/mcp server config: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
-}
-
-const TextBlock = type({ type: "'text'", text: "string" }).array();
-
-/**
- * MCP results are never interpreted: text blocks come back as their text so
- * the model reads prose, and anything else is handed over verbatim as JSON.
- */
-export function shapeMcpContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  const blocks = TextBlock(content);
-  if (!(blocks instanceof type.errors)) {
-    return blocks.map((block) => block.text).join("\n");
-  }
-  return JSON.stringify(content);
 }
 
 /** A mediated handle resolves a relative path against the origin it is pinned
@@ -152,11 +151,12 @@ export function mcpServers(
 ): AnnotatedToolFactory<McpServersEnv> {
   assertConfig(config);
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  assertHostExtensions(config.extensions, config.host);
 
   const entries = config.servers.flatMap((server) =>
-    server.tools.map((tool) => ({
-      server,
-      tool,
+    server.tools.filter(isModelVisible).map((tool) => ({
+      server: { ...server },
+      tool: structuredClone(tool),
       qualified: qualifiedName(server.handle, tool.name),
     })),
   );
@@ -204,11 +204,19 @@ export function mcpServers(
           }
           const mediated: MediatedFetch = (input, init) =>
             credential.fetch(input, init);
-          const session = await mcpInitialize(requestPath(runtime.server.url), {
+          const opts: McpClientOptions = {
             fetch: mediated,
             timeoutMs,
-          });
-          return { fetch: mediated, session };
+            ...hostClientOptions(config.host, config.extensions),
+            ...(config.extensions !== undefined
+              ? { extensions: config.extensions }
+              : {}),
+          };
+          const session = await mcpConnect(
+            requestPath(runtime.server.url),
+            opts,
+          );
+          return { ...opts, session };
         })().catch((cause: unknown) => {
           runtime.ready = undefined;
           runtime.handle = undefined;
@@ -231,22 +239,38 @@ export function mcpServers(
             };
           }
           try {
-            const client = await connect(runtime);
+            const context = {
+              server: found.server.handle,
+              url: requestPath(found.server.url),
+              tool: found.qualified,
+              callId: call.id,
+              signal,
+            };
+            await config.host?.validateCatalog?.(context, found.tool);
+            const client: McpClientOptions = {
+              ...(await connect(runtime)),
+              signal,
+              inputSchema: found.tool.inputSchema,
+              ...(found.tool.outputSchema === undefined
+                ? {}
+                : { outputSchema: found.tool.outputSchema }),
+            };
             const result = await mcpCallTool(
               requestPath(found.server.url),
               found.tool.name,
               call.arguments,
-              { ...client, timeoutMs, signal },
+              client,
             ).catch((cause: unknown) => {
               // The session may have expired; the next call opens a new one.
               runtime.ready = undefined;
               throw cause;
             });
-            return {
-              callId: call.id,
-              isError: result.isError === true,
-              content: shapeMcpContent(result.content),
-            };
+            return await projectToolResult(
+              context,
+              result,
+              client,
+              config.host,
+            );
           } catch (cause) {
             // One server's failure is that server's tool error, never the
             // agent's: every other bound server keeps working.

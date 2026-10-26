@@ -88,12 +88,21 @@ export function startTestMcpServer(
           return new Response("bad request", { status: 400 });
         }
         if (params.name === "echo") {
-          return reply({ content: params.arguments.text });
+          return reply({
+            content: [{ type: "text", text: String(params.arguments.text) }],
+          });
         }
         if (params.name === "delete_thing") {
-          return reply({ content: `deleted ${String(params.arguments.id)}` });
+          return reply({
+            content: [
+              { type: "text", text: `deleted ${String(params.arguments.id)}` },
+            ],
+          });
         }
-        return reply({ content: `unknown tool ${params.name}`, isError: true });
+        return reply({
+          content: [{ type: "text", text: `unknown tool ${params.name}` }],
+          isError: true,
+        });
       }
       return new Response("not found", { status: 404 });
     },

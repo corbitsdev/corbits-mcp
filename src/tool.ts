@@ -15,7 +15,7 @@ import type { CredentialCapability } from "@intx/types";
 import {
   DEFAULT_TIMEOUT_MS,
   mcpCallTool,
-  mcpInitialize,
+  mcpConnect,
   mcpListTools,
   type McpClientOptions,
   type McpTool,
@@ -24,9 +24,17 @@ import {
   assertCatalogNames,
   assertServers,
   isAskExempt,
+  isModelVisible,
   qualifiedName,
   toolDescription,
 } from "./naming.js";
+
+import {
+  assertHostExtensions,
+  hostClientOptions,
+} from "./interchange/client/capabilities.js";
+import { projectToolResult } from "./interchange/client/projection.js";
+import type { McpHostServices } from "./interchange/client/contracts.js";
 
 export interface McpServerConfig {
   /** Namespace prefix for this server's tools: `<name>.<remote-tool-name>`. */
@@ -47,6 +55,8 @@ export interface McpToolsEnv extends BaseEnv {
 
 export interface McpToolsOptions {
   servers: McpServerConfig[];
+  /** Explicit host lifecycle and presentation services. */
+  host?: McpHostServices;
   /**
    * `<server>.<tool>` names allowed to float below the `ask` floor onto
    * `allow` from a resolved `allow` grant. Every generated tool starts
@@ -57,6 +67,11 @@ export interface McpToolsOptions {
   allowWithoutAsk?: string[];
   /** Per-request bound on every MCP round trip; defaults to 60s. */
   timeoutMs?: number;
+  /**
+   * Extension ids advertised on every request. Off unless listed. Tools stay
+   * the only grantable unit; extensions are not projected into tools.
+   */
+  extensions?: readonly string[];
 }
 
 async function resolveFetch(
@@ -93,6 +108,7 @@ export async function mcpTools(
 ): Promise<AnnotatedToolFactory<McpToolsEnv>> {
   const allowWithoutAsk = options.allowWithoutAsk ?? [];
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  assertHostExtensions(options.extensions, options.host);
   assertServers(options.servers, "MCP server name");
   const discovered: DiscoveredTool[] = [];
 
@@ -101,14 +117,18 @@ export async function mcpTools(
     const clientOpts = {
       ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
       timeoutMs,
+      ...hostClientOptions(options.host, options.extensions),
+      ...(options.extensions !== undefined
+        ? { extensions: options.extensions }
+        : {}),
     };
-    const session = await mcpInitialize(server.url, clientOpts);
+    const session = await mcpConnect(server.url, clientOpts);
     const tools = await mcpListTools(server.url, { ...clientOpts, session });
     assertCatalogNames(server.name, tools);
-    for (const tool of tools) {
+    for (const tool of tools.filter(isModelVisible)) {
       discovered.push({
-        server,
-        tool,
+        server: { ...server },
+        tool: structuredClone(tool),
         qualified: qualifiedName(server.name, tool.name),
       });
     }
@@ -153,8 +173,12 @@ export async function mcpTools(
             const opts = {
               ...(clientFetch !== undefined ? { fetch: clientFetch } : {}),
               timeoutMs,
+              ...hostClientOptions(options.host, options.extensions),
+              ...(options.extensions !== undefined
+                ? { extensions: options.extensions }
+                : {}),
             };
-            const session = await mcpInitialize(server.url, opts);
+            const session = await mcpConnect(server.url, opts);
             return { ...opts, session };
           })();
           clientByServer.set(server.name, client);
@@ -174,25 +198,37 @@ export async function mcpTools(
             };
           }
           try {
-            const result = await connect(found.server)
-              .then((client) =>
-                mcpCallTool(found.server.url, found.tool.name, call.arguments, {
-                  ...client,
-                  signal,
-                }),
-              )
-              .catch((cause: unknown) => {
-                clientByServer.delete(found.server.name);
-                throw cause;
-              });
-            return {
+            const context = {
+              server: found.server.name,
+              url: found.server.url,
+              tool: found.qualified,
               callId: call.id,
-              isError: result.isError === true,
-              content:
-                typeof result.content === "string"
-                  ? result.content
-                  : JSON.stringify(result.content),
+              signal,
             };
+            await options.host?.validateCatalog?.(context, found.tool);
+            const client: McpClientOptions = {
+              ...(await connect(found.server)),
+              signal,
+              inputSchema: found.tool.inputSchema,
+              ...(found.tool.outputSchema === undefined
+                ? {}
+                : { outputSchema: found.tool.outputSchema }),
+            };
+            const result = await mcpCallTool(
+              found.server.url,
+              found.tool.name,
+              call.arguments,
+              client,
+            ).catch((cause: unknown) => {
+              clientByServer.delete(found.server.name);
+              throw cause;
+            });
+            return await projectToolResult(
+              context,
+              result,
+              client,
+              options.host,
+            );
           } catch (err) {
             return {
               callId: call.id,
