@@ -1,6 +1,6 @@
 {
   "name": "@corbits/mcp",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "MCP client tool package for Interchange: streamable HTTP, per-tool grants, OAuth.",
   "keywords": [
     "corbits",
