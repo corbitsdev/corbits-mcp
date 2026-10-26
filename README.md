@@ -47,29 +47,62 @@ or certify the host's sandbox. See [scope and evidence](docs/conformance.md).
 
 ## Install
 
+`@corbits/mcp@0.4.0` is the package. Neutral imports `@corbits/mcp/client` and
+`@corbits/mcp/server` need no Interchange or OAuth peers.
+
 ```bash
 bun add @corbits/mcp
 # For Interchange consumption:
 bun add @intx/agent @intx/harness
-# Historical root / guarded OAuth login also requires OAuth-core:
-bun add @corbits/oauth-core@0.3.0
+# Historical root entry and guarded OAuth login:
+bun add @corbits/oauth-core@0.3.3
 ```
 
 Runs on Node.js 24+ and Bun 1.2+.
 
-Standalone client/server entries do not require OAuth-core or Interchange host
-peers. OAuth-core is now an **optional peer**, not a mandatory dependency: this
-is a breaking installation change for the historical root and OAuth login users,
-who must explicitly install it as shown above. Installing OAuth-core still brings
+OAuth-core is an **optional peer**, not a mandatory dependency: this is a
+breaking installation change for the historical root and OAuth login users, who
+must explicitly install it as shown above. Installing OAuth-core still brings
 its own DB/hub/Hono dependencies; that host installation is separate from the
 neutral package. See [public API dependency notes](docs/public-api.md) for the
 credential-http/harness/types peer conflict affecting the full hub setup.
 
-For the `@corbits/mcp/hub` routes, also install:
+For hub discovery, also install `@corbits/credential-http@0.1.3` plus the hub
+packages:
 
 ```bash
-bun add @corbits/credential-http @intx/authz @intx/crypto @intx/db @intx/hub-api drizzle-orm hono
+bun add @corbits/credential-http@0.1.3 @intx/authz @intx/crypto @intx/db @intx/hub-api drizzle-orm hono
 ```
+
+## Use it from an agent
+
+List tools with the standalone client. That import needs no Interchange or OAuth
+peers:
+
+```ts
+import { mcpConnect, mcpListTools } from "@corbits/mcp/client";
+
+const url = "https://mcp.deepwiki.com/mcp";
+const session = await mcpConnect(url);
+for (const tool of await mcpListTools(url, { session })) {
+  console.log(`${tool.name}: ${tool.description ?? ""}`);
+}
+```
+
+After `@intx/agent` and `@intx/harness` are installed, the peer-backed root
+entry discovers each server and builds one Interchange tool per remote tool:
+
+```ts
+import { mcpTools } from "@corbits/mcp";
+
+const factory = await mcpTools({
+  servers: [{ name: "deepwiki", url: "https://mcp.deepwiki.com/mcp" }],
+});
+```
+
+The four entries in the table above are the public surface. This package does
+not claim full MCP certification and does not supply a browser renderer. Legacy
+sessions are in-memory. The Skills consumer declines dynamic manifests.
 
 ## Quickstart
 
