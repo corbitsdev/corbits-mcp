@@ -60,7 +60,7 @@ beforeAll(async () => {
       "--no-fund",
       join(sandbox, `corbits-mcp-${packageManifest.version}.tgz`),
       ...peers,
-      "@corbits/oauth-core@0.3.0",
+      "@corbits/oauth-core@0.3.3",
     ],
     hostSandbox,
   );
@@ -79,7 +79,7 @@ test("packed exports retain the four roles and historical facades", async () => 
     ),
   );
   expect(manifest.dependencies["@corbits/oauth-core"]).toBeUndefined();
-  expect(manifest.peerDependencies["@corbits/oauth-core"]).toBe("^0.3.0");
+  expect(manifest.peerDependencies["@corbits/oauth-core"]).toBe("^0.3.3");
   expect(manifest.peerDependenciesMeta["@corbits/oauth-core"]).toEqual({
     optional: true,
   });
