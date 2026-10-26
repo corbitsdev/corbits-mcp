@@ -32,7 +32,7 @@ actual OAuth-core `OAuthDiscoveryError` class. Neutral consumers must not import
 the optional OAuth implementation merely to perform an `instanceof` check.
 
 ```sh
-npm install @corbits/mcp @corbits/oauth-core@0.3.0 @intx/agent@0.5.0 @intx/harness@0.5.0
+npm install @corbits/mcp @corbits/oauth-core@0.3.3 @intx/agent@0.5.0 @intx/harness@0.5.0
 ```
 
 The full hub peer set does not resolve: credential-http 0.1.0 declares harness
