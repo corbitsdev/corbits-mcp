@@ -47,15 +47,15 @@ or certify the host's sandbox. See [scope and evidence](docs/conformance.md).
 
 ## Install
 
-`@corbits/mcp@0.4.0` is the package. Neutral imports `@corbits/mcp/client` and
+`@corbits/mcp@0.4.1` is the package. Neutral imports `@corbits/mcp/client` and
 `@corbits/mcp/server` need no Interchange or OAuth peers.
 
 ```bash
 bun add @corbits/mcp
-# For Interchange consumption:
-bun add @intx/agent @intx/harness
-# Historical root entry and guarded OAuth login (optional peer ^0.3.0):
-bun add @corbits/oauth-core@0.3.0
+# For Interchange consumption (optional peers ^0.5.0):
+bun add @intx/agent@0.5.0 @intx/harness@0.5.0
+# Historical root entry and guarded OAuth login (optional peer ^0.3.3):
+bun add @corbits/oauth-core@0.3.3
 ```
 
 Runs on Node.js 24+ and Bun 1.2+.
@@ -64,14 +64,11 @@ OAuth-core is an **optional peer**, not a mandatory dependency: this is a
 breaking installation change for the historical root and OAuth login users, who
 must explicitly install it as shown above. Installing OAuth-core still brings
 its own DB/hub/Hono dependencies; that host installation is separate from the
-neutral package. See [public API dependency notes](docs/public-api.md) for the
-credential-http/harness/types peer conflict affecting the full hub setup.
+neutral package. See [public API dependency notes](docs/public-api.md).
 
-For hub discovery, `@corbits/credential-http` is an optional peer (`^0.1.0`).
-This package pins development dependency `0.1.0`. That release declares
-`@intx/harness` and `@intx/types` `^0.4.0`, so it does not resolve with the
-0.5 baseline, and no companion release number is known. See
-[public API dependency notes](docs/public-api.md). The other hub packages:
+For hub discovery, `@corbits/credential-http` is an optional peer (`^0.1.3`).
+Install `@corbits/credential-http@0.1.3`. That release accepts `@intx/harness`
+and `@intx/types` `^0.5.0`. The other hub packages:
 
 ```bash
 bun add @intx/authz @intx/crypto @intx/db @intx/hub-api drizzle-orm hono
@@ -93,7 +90,8 @@ for (const tool of await mcpListTools(url, { session })) {
 ```
 
 The root entry requires `@corbits/oauth-core` as well as `@intx/agent` and
-`@intx/harness`. Install `@corbits/oauth-core@0.3.0` (optional peer `^0.3.0`).
+`@intx/harness`. Install `@corbits/oauth-core@0.3.3` (optional peer `^0.3.3`)
+and `@intx/harness@0.5.0` (optional peer `^0.5.0`).
 `@intx/agent` and `@intx/harness` alone are not enough: importing `mcpTools`
 from `@corbits/mcp` loads `@corbits/oauth-core`. After those peers are
 installed, the root entry discovers each server and builds one Interchange
@@ -316,7 +314,7 @@ above still apply, including no deprecated HTTP+SSE transport or SSE resumption.
 - `readCredentialSecret` is now `readCredential`, which returns `{ secret, origin? }`. `discoverMcpServer` takes `credential: { secret, origin? }` instead of `secret`.
 - `mcpInitialize` returns an `McpSession` (`protocolVersion`, `sessionId?`, `serverInfo?`) and sends `notifications/initialized`. Pass it as `{ session }` to `mcpListTools` and `mcpCallTool`; a stateful server needs it.
 - The discovery route refuses plain-http loopback URLs unless `allowLoopback` is set. Handles and server names containing `.`, and catalogs repeating a tool name, are refused. `mcpTools` refuses an empty or repeated server name, and a non-https URL, before any request.
-- The integration baseline is `@intx/agent` 0.5.0 and `@intx/harness` 0.5.0; see package peer ranges.
+- The integration baseline is `@intx/agent` 0.5.0, `@intx/harness` 0.5.0 (peer `^0.5.0`), `@corbits/oauth-core` 0.3.3 (peer `^0.3.3`), and `@corbits/credential-http` 0.1.3 (peer `^0.1.3`).
 - Discovery rejects authorization-server metadata whose `issuer` differs from the one the protected resource names.
 
 ## License

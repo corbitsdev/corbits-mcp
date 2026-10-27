@@ -119,11 +119,11 @@ Root import consumers still need their historical Interchange dependencies.
 
 Publisher/task-runtime/server-auth and host skill-loader factories are now exported
 through their role entries and exercised from installed tarballs. OAuth-core is now an optional peer: historical root and guarded login consumers
-must explicitly install `@corbits/oauth-core@^0.3.0` alongside their agent/harness
-peers. Neutral client/server consumers need none of those optional host packages.
-Packed auth fixtures explicitly install OAuth-core 0.3.0. See
-[public API](public-api.md) for the neutral URL-error class distinction and the
-companion credential-http harness/types 0.5.0 support requirement.
+must explicitly install `@corbits/oauth-core@^0.3.3` alongside `@intx/harness@^0.5.0`
+and their agent peers. Neutral client/server consumers need none of those optional host packages.
+Packed auth fixtures explicitly install OAuth-core 0.3.3. See
+[public API](public-api.md) for the neutral URL-error class distinction.
+Hub discovery uses optional peer `@corbits/credential-http@^0.1.3`.
 
 ## Legacy server rollout
 
