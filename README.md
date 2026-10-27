@@ -54,8 +54,8 @@ or certify the host's sandbox. See [scope and evidence](docs/conformance.md).
 bun add @corbits/mcp
 # For Interchange consumption:
 bun add @intx/agent @intx/harness
-# Historical root entry and guarded OAuth login:
-bun add @corbits/oauth-core@0.3.3
+# Historical root entry and guarded OAuth login (optional peer ^0.3.0):
+bun add @corbits/oauth-core@0.3.0
 ```
 
 Runs on Node.js 24+ and Bun 1.2+.
@@ -67,11 +67,14 @@ its own DB/hub/Hono dependencies; that host installation is separate from the
 neutral package. See [public API dependency notes](docs/public-api.md) for the
 credential-http/harness/types peer conflict affecting the full hub setup.
 
-For hub discovery, also install `@corbits/credential-http@0.1.3` plus the hub
-packages:
+For hub discovery, `@corbits/credential-http` is an optional peer (`^0.1.0`).
+This package pins development dependency `0.1.0`. That release declares
+`@intx/harness` and `@intx/types` `^0.4.0`, so it does not resolve with the
+0.5 baseline, and no companion release number is known. See
+[public API dependency notes](docs/public-api.md). The other hub packages:
 
 ```bash
-bun add @corbits/credential-http@0.1.3 @intx/authz @intx/crypto @intx/db @intx/hub-api drizzle-orm hono
+bun add @intx/authz @intx/crypto @intx/db @intx/hub-api drizzle-orm hono
 ```
 
 ## Use it from an agent
@@ -89,8 +92,12 @@ for (const tool of await mcpListTools(url, { session })) {
 }
 ```
 
-After `@intx/agent` and `@intx/harness` are installed, the peer-backed root
-entry discovers each server and builds one Interchange tool per remote tool:
+The root entry requires `@corbits/oauth-core` as well as `@intx/agent` and
+`@intx/harness`. Install `@corbits/oauth-core@0.3.0` (optional peer `^0.3.0`).
+`@intx/agent` and `@intx/harness` alone are not enough: importing `mcpTools`
+from `@corbits/mcp` loads `@corbits/oauth-core`. After those peers are
+installed, the root entry discovers each server and builds one Interchange
+tool per remote tool:
 
 ```ts
 import { mcpTools } from "@corbits/mcp";
@@ -100,9 +107,11 @@ const factory = await mcpTools({
 });
 ```
 
-The four entries in the table above are the public surface. This package does
-not claim full MCP certification and does not supply a browser renderer. Legacy
-sessions are in-memory. The Skills consumer declines dynamic manifests.
+The four entries in the table above are the scoped role entries, not the whole
+public surface. The package also exports `.`, `./hub`, `./sidecar-bundle`, and
+`./server/task-store`. This package does not claim full MCP certification and
+does not supply a browser renderer. Legacy sessions are in-memory. The Skills
+consumer declines dynamic manifests.
 
 ## Quickstart
 
