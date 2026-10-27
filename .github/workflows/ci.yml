@@ -28,5 +28,5 @@ jobs:
           node -e 'import("@corbits/mcp/client").then((m) => { for (const n of ["mcpInitialize", "mcpListTools", "mcpCallTool"]) if (typeof m[n] !== "function") throw new Error("missing export: " + n); })'
           mkdir -p "$RUNNER_TEMP/host" && cd "$RUNNER_TEMP/host"
           npm init -y >/dev/null && npm pkg set type=module >/dev/null
-          npm install "$TARBALL" @intx/agent@0.5.0 @corbits/oauth-core@0.3.2
+          npm install "$TARBALL" @intx/agent@0.5.0 @intx/harness@0.5.0 @corbits/oauth-core@0.3.3
           node -e 'import("@corbits/mcp").then((m) => { for (const n of ["mcpTools", "mcpInitialize", "mcpListTools", "mcpCallTool"]) if (typeof m[n] !== "function") throw new Error("missing export: " + n); })'
