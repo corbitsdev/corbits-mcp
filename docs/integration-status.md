@@ -8,10 +8,11 @@ unit tests and 2,116 assertions. This is not a 100% conformance claim.
 
 - Public role factories/contracts are exported and exercised through installed
   tarballs. File-store is explicit `@corbits/mcp/server/task-store` only.
-- OAuth-core is an optional peer `^0.3.0` and pinned development dependency 0.3.0.
+- OAuth-core is an optional peer `^0.3.3` and pinned development dependency 0.3.3.
   Root/login consumers install it explicitly. Neutral client/server installations
   and module graphs exclude optional host stacks. Host/auth fixtures explicitly
-  install OAuth-core 0.3.0 and agent/harness 0.5.0.
+  install OAuth-core 0.3.3 and `@intx/harness` 0.5.0 (peer `^0.5.0`).
+  `@corbits/credential-http` is an optional peer `^0.1.3`.
 - Opt-in server legacy compatibility is implemented for 2025-11-25/06-18/03-26.
   [Legacy deployment](legacy-server.md) documents defaults (1,024 sessions,
   absolute 30-minute TTL), in-memory affinity/restart loss, 10,000 request IDs,
@@ -62,14 +63,15 @@ unadvertised issuer handling are additional integration limits, distinct from
 exact issue acceptance. Resource exchange/refresh propagation exists upstream;
 this package's local config omission was fixed.
 
-**CL11480 (credential-http):** full pinned hub installation fails npm ERESOLVE:
-0.1.0 requires harness/types ^0.4.0 against the 0.5.0 baseline. A companion
-release validated with and declaring support for both 0.5.0 peers is needed;
-no fixed release number is established. Request+init overrides and insecure
-configured schemes also require upstream correction. These optional-host
-failures do not block the passing neutral installation.
+**CL11480 (credential-http):** the 2026-10-25 snapshot failed npm ERESOLVE on
+credential-http 0.1.0, which required harness/types ^0.4.0 against the 0.5.0
+baseline. This release's optional peer is `^0.1.3`. `@corbits/credential-http@0.1.3`
+accepts `@intx/harness` and `@intx/types` `^0.5.0`. Request+init overrides and
+insecure configured schemes were recorded against 0.1.0 and still require
+upstream correction. Those optional-host limits do not block the neutral
+installation.
 
-Previously reproduced external install (exit 1):
+Previously reproduced external install of 0.1.0 (exit 1):
 
 ```sh
 npm install --prefix "$peer_dir" --ignore-scripts --no-audit --no-fund @corbits/credential-http@0.1.0 @intx/agent@0.5.0 @intx/harness@0.5.0 @intx/db@0.5.0 @intx/hub-api@0.5.0 @intx/types@0.5.0 drizzle-orm@0.45.3 hono@4.13.9

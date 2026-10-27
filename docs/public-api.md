@@ -18,10 +18,10 @@ writer; stale-lock recovery requires proof the previous writer is dead.
 
 ## Dependency boundary and setup
 
-OAuth-core is an optional peer (`^0.3.0`) and pinned development dependency
-(0.3.0). Neutral client/server entries do not require it. Root and guarded OAuth
+OAuth-core is an optional peer (`^0.3.3`) and pinned development dependency
+(0.3.3). Neutral client/server entries do not require it. Root and guarded OAuth
 login users must explicitly install OAuth-core plus the root's agent/harness
-peers; this is a breaking change from automatic OAuth installation. Host/auth
+peers (`@intx/harness` `^0.5.0`); this is a breaking change from automatic OAuth installation. Host/auth
 packed fixtures explicitly install these dependencies. OAuth-core itself still
 transitively installs DB/hub/Hono; that cost belongs to the opt-in host setup.
 
@@ -32,14 +32,12 @@ actual OAuth-core `OAuthDiscoveryError` class. Neutral consumers must not import
 the optional OAuth implementation merely to perform an `instanceof` check.
 
 ```sh
-npm install @corbits/mcp @corbits/oauth-core@0.3.0 @intx/agent@0.5.0 @intx/harness@0.5.0
+npm install @corbits/mcp @corbits/oauth-core@0.3.3 @intx/agent@0.5.0 @intx/harness@0.5.0
 ```
 
-The full hub peer set does not resolve: credential-http 0.1.0 declares harness
-**and types** `^0.4.0`, incompatible with the pinned 0.5.0 baseline. A companion
-credential-http release validated with and declaring support for both
-`@intx/harness@0.5.0` and `@intx/types@0.5.0` is needed. No known release number
-is asserted; no force/legacy-peer-deps or external patch was used.
+`@corbits/credential-http` is an optional peer (`^0.1.3`). Install
+`@corbits/credential-http@0.1.3`. That release accepts `@intx/harness` and
+`@intx/types` `^0.5.0`.
 
 ## Installed evidence
 
@@ -83,11 +81,12 @@ provider/hub path has equivalent checks. OAuth-core already propagates resource
 on code exchange and refresh; the local config-builder omission was fixed, not
 an absent upstream feature.
 
-**CL11480:** Besides the harness/types peer conflict above, credential-http 0.1.0
-ignores Request+init overrides in its Request branch and permits insecure
-configured credential destination schemes. Local hub endpoint/redirect checks
-do not fix standalone external provider handles. Upstream correction and host
-transport policy remain required; no external package was patched here.
+**CL11480:** credential-http 0.1.0 ignored Request+init overrides in its Request
+branch and permitted insecure configured credential destination schemes. Peer
+`^0.1.3` accepts `@intx/harness` and `@intx/types` `^0.5.0`. Local hub
+endpoint/redirect checks do not fix standalone external provider handles.
+Upstream correction and host transport policy remain required; no external
+package was patched here.
 
 The source audit is recorded in `src/auth/INTEGRATION.md`; this public summary
 keeps the relevant limits available in the packed docs. Production encrypted
